@@ -58,8 +58,8 @@ export const DashboardView: React.FC = () => {
             </h1>
             <p className="text-sm text-[#D6D5CE] leading-relaxed max-w-2xl">
               Build and verify real digital electronics circuits manually. Insert TTL, CMOS, and
-              static RAM packages into ZIF sockets or the solderless breadboard, route physical
-              patch cords, apply clock transitions, and observe authentic IC-level behavior.
+              static RAM packages into the five ZIF sockets, route physical patch cords, apply
+              clock transitions, and observe authentic IC-level behavior.
             </p>
             <div className="pt-2 flex flex-wrap items-center gap-3">
               <button
@@ -124,8 +124,8 @@ export const DashboardView: React.FC = () => {
           <div className="lg:col-span-4 bg-[#E5E5E1] border border-[#C9C9C3] rounded-md p-5 space-y-4">
             <h2 className="text-base font-semibold text-[#20252B]">New Circuit Project</h2>
             <p className="text-xs text-[#555C62] leading-relaxed">
-              Initialize a clean DT-1004 trainer bench with unpowered rails and five empty ZIF
-              sockets (four 16-pin logic sockets + one 24-pin RAM socket).
+              Initialize a clean DT-1004 trainer bench with five empty ZIF sockets (four 16-pin
+              logic sockets + one 24-pin RAM socket) and integrated socket power.
             </p>
             <form onSubmit={handleCreate} className="space-y-3">
               <div>
@@ -176,7 +176,7 @@ export const DashboardView: React.FC = () => {
             <div className="flex items-center justify-between">
               <h2 className="text-base font-semibold text-[#20252B]">Recent Saved Projects</h2>
               <span className="text-xs font-mono text-[#747C82]">
-                IndexedDB Local Store · {recentProjects.length} saved
+                Firebase Cloud + IndexedDB · {recentProjects.length} saved
               </span>
             </div>
 
@@ -185,7 +185,7 @@ export const DashboardView: React.FC = () => {
                 <p className="text-sm font-medium text-[#303840]">No saved circuits yet</p>
                 <p className="text-xs text-[#747C82]">
                   Open the Virtual Laboratory or create a new circuit project above. Changes auto-save
-                  automatically to browser IndexedDB.
+                  to local IndexedDB and sync to Firebase Cloud Firestore when signed in.
                 </p>
               </div>
             ) : (

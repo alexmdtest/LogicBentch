@@ -157,22 +157,57 @@ export async function saveProjectToStorage(project: ProjectDocument): Promise<vo
     existing.unshift(stamped);
     setLocalFallbackProjects(existing.slice(0, 25));
   }
+
+  if (typeof window !== 'undefined') {
+    try {
+      const { auth, saveProjectToFirestore } = await import('../firebase');
+      if (auth.currentUser) {
+        await saveProjectToFirestore(stamped);
+      }
+    } catch {
+      // Cloud sync is best-effort alongside local IndexedDB
+    }
+  }
 }
 
 export async function listStoredProjects(): Promise<ProjectDocument[]> {
+  let localList: ProjectDocument[] = [];
   try {
     const db = await openDB();
-    const list = await new Promise<ProjectDocument[]>((resolve, reject) => {
+    localList = await new Promise<ProjectDocument[]>((resolve, reject) => {
       const tx = db.transaction(STORE_PROJECTS, 'readonly');
       const req = tx.objectStore(STORE_PROJECTS).getAll();
       req.onsuccess = () => resolve((req.result as ProjectDocument[]) ?? []);
       req.onerror = () => reject(req.error);
     });
     db.close();
-    return list.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   } catch {
-    return getLocalFallbackProjects().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    localList = getLocalFallbackProjects();
   }
+
+  if (typeof window !== 'undefined') {
+    try {
+      const { auth, listProjectsFromFirestore } = await import('../firebase');
+      if (auth.currentUser) {
+        const cloudList = await listProjectsFromFirestore();
+        const mergedMap = new Map<string, ProjectDocument>();
+        for (const p of localList) mergedMap.set(p.id, p);
+        for (const cp of cloudList) {
+          const existing = mergedMap.get(cp.id);
+          if (!existing || cp.updatedAt >= existing.updatedAt) {
+            mergedMap.set(cp.id, cp);
+          }
+        }
+        return Array.from(mergedMap.values()).sort((a, b) =>
+          b.updatedAt.localeCompare(a.updatedAt)
+        );
+      }
+    } catch {
+      // Fall back to local projects if offline or unauthenticated
+    }
+  }
+
+  return localList.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 export async function loadProjectById(id: string): Promise<ProjectDocument | null> {
@@ -185,10 +220,21 @@ export async function loadProjectById(id: string): Promise<ProjectDocument | nul
       req.onerror = () => reject(req.error);
     });
     db.close();
-    return found;
+    if (found) return found;
   } catch {
-    return getLocalFallbackProjects().find((p) => p.id === id) ?? null;
+    const fallback = getLocalFallbackProjects().find((p) => p.id === id) ?? null;
+    if (fallback) return fallback;
   }
+
+  if (typeof window !== 'undefined') {
+    try {
+      const all = await listStoredProjects();
+      return all.find((p) => p.id === id) ?? null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 export async function deleteProjectById(id: string): Promise<void> {
@@ -204,5 +250,16 @@ export async function deleteProjectById(id: string): Promise<void> {
   } catch {
     const filtered = getLocalFallbackProjects().filter((p) => p.id !== id);
     setLocalFallbackProjects(filtered);
+  }
+
+  if (typeof window !== 'undefined') {
+    try {
+      const { auth, deleteProjectFromFirestore } = await import('../firebase');
+      if (auth.currentUser) {
+        await deleteProjectFromFirestore(id);
+      }
+    } catch {
+      // Ignore cloud deletion error when offline
+    }
   }
 }

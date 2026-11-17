@@ -19,8 +19,13 @@ export default function App() {
 
   const handleSave = async () => {
     await saveCurrentProject();
-    setSaveToast('Project saved to local IndexedDB');
-    setTimeout(() => setSaveToast(null), 2200);
+    const { auth } = await import('./firebase');
+    setSaveToast(
+      auth.currentUser
+        ? 'Project synced to Firebase Firestore & local IndexedDB'
+        : 'Project saved to local IndexedDB (Sign in to sync to Firebase)'
+    );
+    setTimeout(() => setSaveToast(null), 2400);
   };
 
   return (

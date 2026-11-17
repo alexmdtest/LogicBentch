@@ -114,267 +114,193 @@ function renderMiniGateInPackage(
   );
 }
 
-interface InternalCascadeStage {
-  title: string;
-  subtitle: string;
-  leftPins: number[];
-  rightPins: number[];
-  cascadeLabel?: string;
+/**
+ * Reusable IEEE Flip-Flop symbol (D, JK, SR, T) with clock dynamic indicator (>CK),
+ * optional negative-edge clock bubble, active-low preset (~PR) / clear (~CLR) bubbles,
+ * and Q / ~Q output terminals for inside-package schematics.
+ */
+function renderFlipFlopSymbol(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  typeLabel: string,
+  opts?: {
+    negEdgeClk?: boolean;
+    hasPre?: boolean;
+    hasClr?: boolean;
+    topLabel?: string;
+    clkSide?: 'left' | 'top';
+  }
+) {
+  const cx = x + w / 2;
+  return (
+    <g>
+      <rect
+        x={x}
+        y={y}
+        width={w}
+        height={h}
+        rx={2.5}
+        fill="#FFFFFF"
+        stroke="#20252B"
+        strokeWidth={1.6}
+      />
+      {opts?.topLabel && (
+        <text
+          x={cx}
+          y={y + 11}
+          textAnchor="middle"
+          fill="#456A83"
+          fontSize={7.2}
+          fontWeight={700}
+          fontFamily="IBM Plex Mono, monospace"
+        >
+          {opts.topLabel}
+        </text>
+      )}
+      {/* Preset & Clear Bubbles */}
+      {opts?.hasPre && (
+        <g>
+          <circle cx={cx - 12} cy={y - 3} r={2.8} fill="#FFFFFF" stroke="#20252B" strokeWidth={1.3} />
+          <text x={cx - 12} y={y + 9} textAnchor="middle" fill="#7A4848" fontSize={6.5} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
+            PR
+          </text>
+        </g>
+      )}
+      {opts?.hasClr && (
+        <g>
+          <circle cx={cx + 12} cy={y + h + 3} r={2.8} fill="#FFFFFF" stroke="#20252B" strokeWidth={1.3} />
+          <text x={cx + 12} y={y + h - 4} textAnchor="middle" fill="#7A4848" fontSize={6.5} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
+            CLR
+          </text>
+        </g>
+      )}
+      {/* Clock Triangle */}
+      {opts?.clkSide === 'top' ? (
+        <g>
+          {opts?.negEdgeClk && (
+            <circle cx={cx} cy={y - 3} r={2.8} fill="#FFFFFF" stroke="#20252B" strokeWidth={1.3} />
+          )}
+          <polygon
+            points={`${cx - 4.5},${y} ${cx + 4.5},${y} ${cx},${y + 6.5}`}
+            fill="none"
+            stroke="#20252B"
+            strokeWidth={1.3}
+          />
+        </g>
+      ) : (
+        <g>
+          {opts?.negEdgeClk && (
+            <circle cx={x - 3} cy={y + h / 2} r={2.8} fill="#FFFFFF" stroke="#20252B" strokeWidth={1.3} />
+          )}
+          <polygon
+            points={`${x},${y + h / 2 - 4.5} ${x + 6.5},${y + h / 2} ${x},${y + h / 2 + 4.5}`}
+            fill="none"
+            stroke="#20252B"
+            strokeWidth={1.3}
+          />
+        </g>
+      )}
+      <text
+        x={cx}
+        y={y + h / 2 + 3}
+        textAnchor="middle"
+        fill="#20252B"
+        fontSize={7.8}
+        fontWeight={700}
+        fontFamily="IBM Plex Mono, monospace"
+      >
+        {typeLabel}
+      </text>
+      {/* Q and ~Q Output Indicators */}
+      <text x={x + w - 4} y={y + 13} textAnchor="end" fill="#3B5746" fontSize={7.2} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
+        Q
+      </text>
+      <circle cx={x + w + 2.8} cy={y + h - 10} r={2.6} fill="#FFFFFF" stroke="#20252B" strokeWidth={1.3} />
+      <text x={x + w - 4} y={y + h - 7} textAnchor="end" fill="#3B5746" fontSize={7} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
+        Q̄
+      </text>
+    </g>
+  );
 }
 
-function getInternalCascadedStages(partNumber: string): InternalCascadeStage[] | null {
-  switch (partNumber) {
-    case '7474':
-      return [
-        {
-          title: 'D FLIP-FLOP 1 (POS-EDGE)',
-          subtitle: '~1CLR(1), 1D(2), >1CLK(3), ~1PRE(4) → 1Q(5), 1~Q(6)',
-          leftPins: [1, 2, 3, 4, 5, 6],
-          rightPins: [14],
-          cascadeLabel: 'Independent Dual Edge-Triggered Stages',
-        },
-        {
-          title: 'D FLIP-FLOP 2 (POS-EDGE)',
-          subtitle: '~2CLR(13), 2D(12), >2CLK(11), ~2PRE(10) → 2Q(9), 2~Q(8)',
-          leftPins: [7],
-          rightPins: [13, 12, 11, 10, 9, 8],
-        },
-      ];
-    case '7476':
-      return [
-        {
-          title: 'JK FLIP-FLOP 1 (NEG-EDGE)',
-          subtitle: '1CLK(1), ~1PRE(2), ~1CLR(3), 1J(4), 1K(16) → 1Q(15), 1~Q(14)',
-          leftPins: [1, 2, 3, 4],
-          rightPins: [16, 15, 14],
-          cascadeLabel: 'Shared Supply Rails: VCC(5) · GND(13)',
-        },
-        {
-          title: 'JK FLIP-FLOP 2 (NEG-EDGE)',
-          subtitle: '2CLK(6), ~2PRE(7), ~2CLR(8), 2J(9), 2K(12) → 2Q(11), 2~Q(10)',
-          leftPins: [5, 6, 7, 8],
-          rightPins: [13, 12, 11, 10, 9],
-        },
-      ];
-    case '7483':
-      return [
-        {
-          title: 'FULL ADDER STAGE 1 & 2 (BITS 1–2)',
-          subtitle: 'C0(13) + A1(10),B1(11)→S1(9) ➔ C1 ➔ A2(8),B2(7)→S2(6)',
-          leftPins: [5, 6, 7, 8],
-          rightPins: [13, 12, 11, 10, 9],
-          cascadeLabel: 'Internal Carry Chain C1 ➔ C2 ➔ C3',
-        },
-        {
-          title: 'FULL ADDER STAGE 3 & 4 (BITS 3–4)',
-          subtitle: 'C2 + A3(3),B3(4)→S3(2) ➔ C3 ➔ A4(1),B4(16)→S4(15), C4(14)',
-          leftPins: [1, 2, 3, 4],
-          rightPins: [16, 15, 14],
-        },
-      ];
-    case '7485':
-      return [
-        {
-          title: '4-BIT MAGNITUDE COMPARE TREE',
-          subtitle: 'A3,B3(15,1) · A2,B2(13,14) · A1,B1(12,11) · A0,B0(10,9)',
-          leftPins: [1],
-          rightPins: [16, 15, 14, 13, 12, 11, 10, 9],
-          cascadeLabel: 'Word Equality / Inequality Signals ↓',
-        },
-        {
-          title: 'CASCADE EXPANDER & OUTPUT MATRIX',
-          subtitle: 'IA<B(2), IA=B(3), IA>B(4) ➔ OA>B(5), OA=B(6), OA<B(7)',
-          leftPins: [2, 3, 4, 5, 6, 7, 8],
-          rightPins: [],
-        },
-      ];
-    case '7490':
-      return [
-        {
-          title: 'MOD-2 STAGE (FF-A) & RESET GATES',
-          subtitle: 'CKA(14)→QA(12) · R0(1,2)=Pins 2,3 · R9(1,2)=Pins 6,7',
-          leftPins: [2, 3, 5, 6, 7],
-          rightPins: [14, 12, 10],
-          cascadeLabel: 'External Cascade: Wire QA(12) ➔ CKB(1)',
-        },
-        {
-          title: 'MOD-5 RIPPLE CHAIN (FF-B ➔ FF-C ➔ FF-D)',
-          subtitle: 'CKB(1) ➔ QB(9) ➔ QC(8) ➔ QD(11) BCD Feedback',
-          leftPins: [1],
-          rightPins: [11, 9, 8],
-        },
-      ];
-    case '7493':
-      return [
-        {
-          title: 'DIV-BY-2 STAGE (FF-A) & MASTER RESET',
-          subtitle: 'CKA(14) ➔ QA(12) · Reset NAND: R0(1)=Pin 2, R0(2)=Pin 3',
-          leftPins: [2, 3, 5],
-          rightPins: [14, 12, 10],
-          cascadeLabel: 'External Cascade: Wire QA(12) ➔ CKB(1)',
-        },
-        {
-          title: 'DIV-BY-8 RIPPLE CHAIN (FF-B ➔ FF-C ➔ FF-D)',
-          subtitle: 'CKB(1) ➔ QB(9) ➔ QC(8) ➔ QD(11) (Mod-16 Binary)',
-          leftPins: [1],
-          rightPins: [11, 9, 8],
-        },
-      ];
-    case '7495':
-      return [
-        {
-          title: 'MODE SELECT & CLOCK GATING',
-          subtitle: 'MODE(6): 0=Serial (SER Pin 1, ~CLK1 Pin 9) · 1=Parallel (~CLK2 Pin 8)',
-          leftPins: [1, 6, 7],
-          rightPins: [14, 9, 8],
-          cascadeLabel: 'Gated Clock & Muxed D Inputs ↓',
-        },
-        {
-          title: '4-STAGE SHIFT REGISTER (SR-A ➔ SR-B ➔ SR-C ➔ SR-D)',
-          subtitle: 'Inputs A..D(2..5) ➔ Stages A..D ➔ Outputs QA..QD(13..10)',
-          leftPins: [2, 3, 4, 5],
-          rightPins: [13, 12, 11, 10],
-        },
-      ];
-    case '74138':
-      return [
-        {
-          title: 'ADDRESS INVERTERS & ENABLE GATE',
-          subtitle: 'Select A(1), B(2), C(3) · Enable EN = G1(6) · ~G2A(4) · ~G2B(5)',
-          leftPins: [1, 2, 3, 4, 5, 6],
-          rightPins: [16],
-          cascadeLabel: '3-Bit Complementary Address + Enable Bus ↓',
-        },
-        {
-          title: '8× ACTIVE-LOW NAND DECODER ARRAY',
-          subtitle: 'Outputs ~Y0(15), ~Y1(14), ~Y2(13), ~Y3(12), ~Y4(11), ~Y5(10), ~Y6(9), ~Y7(7)',
-          leftPins: [7, 8],
-          rightPins: [15, 14, 13, 12, 11, 10, 9],
-        },
-      ];
-    case '74139':
-      return [
-        {
-          title: 'DECODER 1 (2-TO-4 ACTIVE-LOW NANDS)',
-          subtitle: '~1G(1) Enable + Select 1A(2), 1B(3) ➔ 1~Y0..1~Y3 (Pins 4..7)',
-          leftPins: [1, 2, 3, 4, 5, 6, 7, 8],
-          rightPins: [16],
-          cascadeLabel: 'Dual Independent 2-to-4 Decoder Channels',
-        },
-        {
-          title: 'DECODER 2 (2-TO-4 ACTIVE-LOW NANDS)',
-          subtitle: '~2G(15) Enable + Select 2A(14), 2B(13) ➔ 2~Y0..2~Y3 (Pins 12..9)',
-          leftPins: [],
-          rightPins: [15, 14, 13, 12, 11, 10, 9],
-        },
-      ];
-    case '74148':
-      return [
-        {
-          title: 'PRIORITY INPUT MASK & ENABLE (~EI)',
-          subtitle: '~EI(5) + Active-Low Inputs ~I0..~I3(10..13) & ~I4..~I7(1..4)',
-          leftPins: [1, 2, 3, 4, 5],
-          rightPins: [16, 13, 12, 11, 10],
-          cascadeLabel: 'Highest-Priority Request Latch ↓',
-        },
-        {
-          title: 'OCTAL ENCODER & CASCADE GATES',
-          subtitle: 'Code ~A2(6), ~A1(7), ~A0(9) · Group ~GS(14) · Enable Out ~EO(15)',
-          leftPins: [6, 7, 8],
-          rightPins: [15, 14, 9],
-        },
-      ];
-    case '74151':
-      return [
-        {
-          title: '3-TO-8 ADDRESS DECODER & STROBE (~G)',
-          subtitle: 'Select A(11), B(10), C(9) + Active-Low Strobe ~G(7)',
-          leftPins: [7, 8],
-          rightPins: [16, 11, 10, 9],
-          cascadeLabel: '8 Select Lines Gate Data Inputs D0..D7 ↓',
-        },
-        {
-          title: '8× AND-OR MULTIPLEXER & INVERT BUFFER',
-          subtitle: 'D0..D3(4..1), D4..D7(15..12) ➔ True Y(5) & Inverted ~W(6)',
-          leftPins: [1, 2, 3, 4, 5, 6],
-          rightPins: [15, 14, 13, 12],
-        },
-      ];
-    case '74153':
-      return [
-        {
-          title: '4-TO-1 MUX 1 & SHARED SELECT (B, A)',
-          subtitle: 'Select B(2), A(14) · Strobe ~1G(1) · Inputs 1C3..1C0(3..6) ➔ 1Y(7)',
-          leftPins: [1, 2, 3, 4, 5, 6, 7, 8],
-          rightPins: [16, 14],
-          cascadeLabel: 'Common Select Bus (B, A) Drives Both MUXes ↓',
-        },
-        {
-          title: '4-TO-1 MUX 2 (PINS 9..15)',
-          subtitle: 'Strobe ~2G(15) · Inputs 2C3..2C0(13..10) ➔ Output 2Y(9)',
-          leftPins: [],
-          rightPins: [15, 13, 12, 11, 10, 9],
-        },
-      ];
-    case '74192':
-      return [
-        {
-          title: 'UP/DOWN CLOCK, LOAD & CLEAR CONTROL',
-          subtitle: 'UP(5), DOWN(4), CLR(14), ~LOAD(11) ➔ ~CO(12), ~BO(13)',
-          leftPins: [4, 5, 8],
-          rightPins: [16, 14, 13, 12, 11],
-          cascadeLabel: 'Synchronous State & Carry/Borrow Gating ↓',
-        },
-        {
-          title: '4-BIT SYNCHRONOUS BCD COUNTER (FF-A..FF-D)',
-          subtitle: 'Preset A,B,C,D(15,1,10,9) ➔ Outputs QA(3), QB(2), QC(6), QD(7)',
-          leftPins: [1, 2, 3, 6, 7],
-          rightPins: [15, 10, 9],
-        },
-      ];
-    case '7446':
-    case '7447':
-      return [
-        {
-          title: 'BCD INPUT BUFFERS & BLANKING / LAMP TEST',
-          subtitle: 'BCD: A(7), B(1), C(2), D(6) · Control: ~LT(3), ~BI/~RBO(4), ~RBI(5)',
-          leftPins: [1, 2, 3, 4, 5, 6, 7, 8],
-          rightPins: [16],
-          cascadeLabel: 'Internal BCD-to-7-Segment ROM Matrix ↓',
-        },
-        {
-          title: '7× OPEN-COLLECTOR CATHODE SINK DRIVERS',
-          subtitle: 'Active-Low Outputs ~a(13), ~b(12), ~c(11), ~d(10), ~e(9), ~f(15), ~g(14)',
-          leftPins: [],
-          rightPins: [15, 14, 13, 12, 11, 10, 9],
-        },
-      ];
-    case '6116':
-      return [
-        {
-          title: 'ROW & COLUMN ADDRESS DECODERS (A0..A10)',
-          subtitle: 'Row A0..A6 (Pins 8..2) · Column A7..A10 (Pins 1, 23, 22, 19)',
-          leftPins: [1, 2, 3, 4, 5, 6, 7, 8],
-          rightPins: [24, 23, 22, 19],
-          cascadeLabel: '2,048 Word Lines × 8-Bit Sense/Write Amplifiers ↓',
-        },
-        {
-          title: '16K-BIT (2K × 8) STATIC CMOS MEMORY ARRAY',
-          subtitle: '128 × 128 Six-Transistor (6T) Static Latch Cells',
-          leftPins: [9, 10],
-          rightPins: [18, 17, 16],
-          cascadeLabel: 'Bidirectional Internal Data Bus ↓',
-        },
-        {
-          title: 'BUS CONTROL (~CS, ~RE, ~WR) & TRI-STATE I/O',
-          subtitle: '~CS(18), ~RE(20), ~WR(21) ➔ I/O0..I/O7 (Pins 9..11, 13..17)',
-          leftPins: [11, 12],
-          rightPins: [21, 20, 15, 14, 13],
-        },
-      ];
-    default:
-      return null;
-  }
+/**
+ * Reusable Full Adder gate sub-network (2 XOR gates + 2 AND gates + 1 OR carry gate)
+ * rendered inside the 7483 4-bit binary full adder package.
+ */
+function renderFullAdderGateNetwork(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  bitIdx: number,
+  aLabel: string,
+  bLabel: string,
+  sLabel: string,
+  cInLabel: string,
+  cOutLabel: string
+) {
+  const cy = y + h / 2;
+  const xor1X = x + 46;
+  const xor2X = x + 118;
+  const andX = x + 118;
+  const orX = x + 178;
+  return (
+    <g>
+      {/* Subtle stage frame */}
+      <rect
+        x={x}
+        y={y}
+        width={w}
+        height={h}
+        rx={3}
+        fill="#FAF9F5"
+        stroke="#B8B7B0"
+        strokeWidth={1}
+        strokeDasharray="3 2"
+      />
+      <text
+        x={x + 6}
+        y={y + 11}
+        fill="#456A83"
+        fontSize={7.2}
+        fontWeight={700}
+        fontFamily="IBM Plex Mono, monospace"
+      >
+        FA{bitIdx}: {aLabel}⊕{bLabel}⊕{cInLabel} → {sLabel}, {cOutLabel}
+      </text>
+      {/* Input traces A_i, B_i into XOR1 */}
+      <line x1={x + 8} y1={cy - 10} x2={xor1X - 18} y2={cy - 10} stroke="#2C5E8A" strokeWidth={1.3} />
+      <line x1={x + 8} y1={cy + 2} x2={xor1X - 18} y2={cy + 2} stroke="#2C5E8A" strokeWidth={1.3} />
+      {renderMiniGateInPackage('XOR', xor1X, cy - 4, 'right')}
+      {/* Half-sum P_i = A_i ⊕ B_i to XOR2 */}
+      <line x1={xor1X + 16} y1={cy - 4} x2={xor2X - 18} y2={cy - 10} stroke="#20252B" strokeWidth={1.3} />
+      {/* Carry-in trace into XOR2 */}
+      <line x1={x + 68} y1={y + 4} x2={x + 68} y2={cy - 2} stroke="#456A83" strokeWidth={1.3} />
+      <line x1={x + 68} y1={cy - 2} x2={xor2X - 18} y2={cy - 2} stroke="#456A83" strokeWidth={1.3} />
+      {renderMiniGateInPackage('XOR', xor2X, cy - 6, 'right')}
+      {/* Sum output S_i */}
+      <line x1={xor2X + 16} y1={cy - 6} x2={x + w - 8} y2={cy - 6} stroke="#3B5746" strokeWidth={1.5} />
+      <text x={x + w - 10} y={cy - 10} textAnchor="end" fill="#3B5746" fontSize={7.2} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
+        {sLabel}
+      </text>
+      {/* Carry generate/propagate AND + OR gates */}
+      <line x1={xor1X - 22} y1={cy + 2} x2={xor1X - 22} y2={cy + 22} stroke="#2C5E8A" strokeWidth={1.1} />
+      <line x1={xor1X - 22} y1={cy + 22} x2={andX - 16} y2={cy + 22} stroke="#2C5E8A" strokeWidth={1.1} />
+      <line x1={x + 68} y1={cy - 2} x2={x + 68} y2={cy + 14} stroke="#456A83" strokeWidth={1.1} />
+      <line x1={x + 68} y1={cy + 14} x2={andX - 16} y2={cy + 14} stroke="#456A83" strokeWidth={1.1} />
+      {renderMiniGateInPackage('AND', andX, cy + 18, 'right')}
+      <line x1={andX + 14} y1={cy + 18} x2={orX - 16} y2={cy + 18} stroke="#456A83" strokeWidth={1.2} />
+      {renderMiniGateInPackage('OR', orX, cy + 18, 'right')}
+      {/* Carry-out line */}
+      <line x1={orX + 16} y1={cy + 18} x2={orX + 26} y2={cy + 18} stroke="#3B5746" strokeWidth={1.4} />
+      <line x1={orX + 26} y1={cy + 18} x2={orX + 26} y2={y + h} stroke="#456A83" strokeWidth={1.4} strokeDasharray="2 1.5" />
+      <text x={orX + 22} y={y + h - 4} textAnchor="end" fill="#456A83" fontSize={6.8} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
+        {cOutLabel}
+      </text>
+    </g>
+  );
 }
 
 /**
@@ -412,11 +338,12 @@ const DIPPinoutDiagram: React.FC<{ ic: ICDefinition }> = ({ ic }) => {
       ? '#3B5746'
       : '#2C5E8A';
 
-  // Render internal gate-level wiring for the 10 Logic Gate ICs directly inside the DIP body
+  // Render internal gate-level & flip-flop wiring for all 25 ICs directly inside the DIP body
   const renderInternalGateWiring = () => {
     const p = ic.partNumber;
     const wireIn = '#2C5E8A';
     const wireOut = '#3B5746';
+    const wireInternal = '#456A83';
 
     // 1. Standard Quad 2-Input Gates: 7400 (NAND), 7408 (AND), 7432 (OR), 7486 (XOR)
     // Pins: G1(1,2->3), G2(4,5->6), GND(7), G3(10,9->8), G4(13,12->11), VCC(14)
@@ -857,216 +784,540 @@ const DIPPinoutDiagram: React.FC<{ ic: ICDefinition }> = ({ ic }) => {
       );
     }
 
-    return null;
-  };
+    // 5. Dual D Positive-Edge Triggered Flip-Flop (7474) — 2 real IEEE D-FF symbols wired to pins 1..6 and 8..13
+    if (p === '7474') {
+      const ffW = 92;
+      const ffH = 128;
+      const ffX = cx - ffW / 2;
+      const ff1Y = topPad + 44;
+      const ff2Y = topPad + 224;
+      return (
+        <g>
+          {/* D-FF 1 (Pins 1..6) */}
+          <path d={`M ${bodyX} ${pinY(1)} L ${ffX - 24} ${pinY(1)} L ${ffX - 24} ${ff1Y + ffH + 14} L ${cx + 12} ${ff1Y + ffH + 14} L ${cx + 12} ${ff1Y + ffH + 6}`} fill="none" stroke={wireIn} strokeWidth={1.5} />
+          <path d={`M ${bodyX} ${pinY(2)} L ${ffX} ${pinY(2)}`} fill="none" stroke={wireIn} strokeWidth={1.6} />
+          <text x={ffX + 6} y={pinY(2) + 3} fill="#2C5E8A" fontSize={7.5} fontWeight={700} fontFamily="IBM Plex Mono, monospace">1D</text>
+          <path d={`M ${bodyX} ${pinY(3)} L ${ffX - 10} ${pinY(3)} L ${ffX - 10} ${ff1Y + ffH / 2} L ${ffX} ${ff1Y + ffH / 2}`} fill="none" stroke={wireIn} strokeWidth={1.6} />
+          <path d={`M ${bodyX} ${pinY(4)} L ${ffX - 18} ${pinY(4)} L ${ffX - 18} ${ff1Y - 12} L ${cx - 12} ${ff1Y - 12} L ${cx - 12} ${ff1Y - 6}`} fill="none" stroke={wireIn} strokeWidth={1.5} />
+          <path d={`M ${ffX + ffW} ${ff1Y + 12} L ${ffX + ffW + 24} ${ff1Y + 12} L ${ffX + ffW + 24} ${pinY(5)} L ${bodyX} ${pinY(5)}`} fill="none" stroke={wireOut} strokeWidth={1.6} />
+          <path d={`M ${ffX + ffW + 6} ${ff1Y + ffH - 10} L ${ffX + ffW + 32} ${ff1Y + ffH - 10} L ${ffX + ffW + 32} ${pinY(6)} L ${bodyX} ${pinY(6)}`} fill="none" stroke={wireOut} strokeWidth={1.6} />
+          {renderFlipFlopSymbol(ffX, ff1Y, ffW, ffH, 'D-FF 1', { hasPre: true, hasClr: true, topLabel: 'POS-EDGE D1' })}
 
-  // Render cascaded internal stages and pin-to-stage connection traces for MSI / Sequential / RAM ICs
-  const renderCascadedBlocksInPackage = () => {
-    const stages = getInternalCascadedStages(ic.partNumber);
-    if (!stages) return null;
+          {/* D-FF 2 (Pins 8..13) */}
+          <path d={`M ${bodyRight} ${pinY(13)} L ${ffX + ffW + 34} ${pinY(13)} L ${ffX + ffW + 34} ${ff2Y + ffH + 14} L ${cx + 12} ${ff2Y + ffH + 14} L ${cx + 12} ${ff2Y + ffH + 6}`} fill="none" stroke={wireIn} strokeWidth={1.5} />
+          <path d={`M ${bodyRight} ${pinY(12)} L ${ffX + ffW + 20} ${pinY(12)} L ${ffX + ffW + 20} ${ff2Y + 34} L ${ffX} ${ff2Y + 34}`} fill="none" stroke={wireIn} strokeWidth={1.5} />
+          <text x={ffX + 6} y={ff2Y + 37} fill="#2C5E8A" fontSize={7.5} fontWeight={700} fontFamily="IBM Plex Mono, monospace">2D</text>
+          <path d={`M ${bodyRight} ${pinY(11)} L ${ffX + ffW + 14} ${pinY(11)} L ${ffX + ffW + 14} ${ff2Y + ffH / 2} L ${ffX} ${ff2Y + ffH / 2}`} fill="none" stroke={wireIn} strokeWidth={1.6} />
+          <path d={`M ${bodyRight} ${pinY(10)} L ${ffX + ffW + 26} ${pinY(10)} L ${ffX + ffW + 26} ${ff2Y - 12} L ${cx - 12} ${ff2Y - 12} L ${cx - 12} ${ff2Y - 6}`} fill="none" stroke={wireIn} strokeWidth={1.5} />
+          <path d={`M ${ffX + ffW} ${ff2Y + 12} L ${ffX + ffW + 18} ${ff2Y + 12} L ${ffX + ffW + 18} ${pinY(9)} L ${bodyRight} ${pinY(9)}`} fill="none" stroke={wireOut} strokeWidth={1.6} />
+          <path d={`M ${ffX + ffW + 6} ${ff2Y + ffH - 10} L ${ffX + ffW + 22} ${ff2Y + ffH - 10} L ${ffX + ffW + 22} ${pinY(8)} L ${bodyRight} ${pinY(8)}`} fill="none" stroke={wireOut} strokeWidth={1.6} />
+          {renderFlipFlopSymbol(ffX, ff2Y, ffW, ffH, 'D-FF 2', { hasPre: true, hasClr: true, topLabel: 'POS-EDGE D2' })}
+        </g>
+      );
+    }
 
-    const innerX = bodyX + 18;
-    const innerW = bodyW - 36; // 232
-    const innerTop = topPad + 34;
-    const innerAvailH = bodyH - 68;
-    const gap = stages.length > 2 ? 26 : 34;
-    const stageH = (innerAvailH - (stages.length - 1) * gap) / stages.length;
+    // 6. Dual JK Negative-Edge Flip-Flop (7476) — 2 real IEEE JK-FF symbols with Preset & Clear wired to pins 1..16
+    if (p === '7476') {
+      const ffW = 96;
+      const ffH = 148;
+      const ffX = cx - ffW / 2;
+      const ff1Y = topPad + 42;
+      const ff2Y = topPad + 248;
+      return (
+        <g>
+          {/* JK-FF 1 (1CLK=1, ~1PRE=2, ~1CLR=3, 1J=4, 1K=16, 1Q=15, 1~Q=14) */}
+          <path d={`M ${bodyX} ${pinY(1)} L ${ffX - 18} ${pinY(1)} L ${ffX - 18} ${ff1Y + ffH / 2} L ${ffX - 6} ${ff1Y + ffH / 2}`} fill="none" stroke={wireIn} strokeWidth={1.6} />
+          <path d={`M ${bodyX} ${pinY(2)} L ${ffX - 12} ${pinY(2)} L ${ffX - 12} ${ff1Y - 12} L ${cx - 12} ${ff1Y - 12} L ${cx - 12} ${ff1Y - 6}`} fill="none" stroke={wireIn} strokeWidth={1.5} />
+          <path d={`M ${bodyX} ${pinY(3)} L ${ffX - 24} ${pinY(3)} L ${ffX - 24} ${ff1Y + ffH + 12} L ${cx + 12} ${ff1Y + ffH + 12} L ${cx + 12} ${ff1Y + ffH + 6}`} fill="none" stroke={wireIn} strokeWidth={1.5} />
+          <path d={`M ${bodyX} ${pinY(4)} L ${ffX} ${pinY(4)}`} fill="none" stroke={wireIn} strokeWidth={1.6} />
+          <path d={`M ${bodyRight} ${pinY(16)} L ${ffX + ffW + 24} ${pinY(16)} L ${ffX + ffW + 24} ${ff1Y + 34} L ${ffX} ${ff1Y + 34}`} fill="none" stroke={wireIn} strokeWidth={1.5} />
+          <path d={`M ${ffX + ffW} ${ff1Y + 12} L ${ffX + ffW + 16} ${ff1Y + 12} L ${ffX + ffW + 16} ${pinY(15)} L ${bodyRight} ${pinY(15)}`} fill="none" stroke={wireOut} strokeWidth={1.6} />
+          <path d={`M ${ffX + ffW + 6} ${ff1Y + ffH - 10} L ${ffX + ffW + 20} ${ff1Y + ffH - 10} L ${ffX + ffW + 20} ${pinY(14)} L ${bodyRight} ${pinY(14)}`} fill="none" stroke={wireOut} strokeWidth={1.6} />
+          {renderFlipFlopSymbol(ffX, ff1Y, ffW, ffH, 'JK-FF 1', { negEdgeClk: true, hasPre: true, hasClr: true, topLabel: '1J(4) · 1K(16)' })}
 
-    const splitSubtitle = (text: string): [string, string | null] => {
-      if (text.length <= 40) return [text, null];
-      const mid = Math.floor(text.length / 2);
-      // Prefer splitting near midpoint on ' · ' or ' ➔ ' or ' + ' or space
-      const separators = [' · ', ' ➔ ', ' + ', ' '];
-      for (const sep of separators) {
-        const leftIdx = text.lastIndexOf(sep, mid + 10);
-        if (leftIdx > 12 && leftIdx < text.length - 10) {
-          return [
-            text.slice(0, leftIdx).trim(),
-            text.slice(leftIdx + (sep === ' ' ? 1 : 0)).trim(),
-          ];
-        }
-      }
-      return [text.slice(0, 40), text.slice(40)];
-    };
+          {/* JK-FF 2 (2CLK=6, ~2PRE=7, ~2CLR=8, 2J=9, 2K=12, 2Q=11, 2~Q=10) */}
+          <path d={`M ${bodyX} ${pinY(6)} L ${ffX - 18} ${pinY(6)} L ${ffX - 18} ${ff2Y + ffH / 2} L ${ffX - 6} ${ff2Y + ffH / 2}`} fill="none" stroke={wireIn} strokeWidth={1.6} />
+          <path d={`M ${bodyX} ${pinY(7)} L ${ffX - 12} ${pinY(7)} L ${ffX - 12} ${ff2Y - 12} L ${cx - 12} ${ff2Y - 12} L ${cx - 12} ${ff2Y - 6}`} fill="none" stroke={wireIn} strokeWidth={1.5} />
+          <path d={`M ${bodyX} ${pinY(8)} L ${ffX - 24} ${pinY(8)} L ${ffX - 24} ${ff2Y + ffH + 12} L ${cx + 12} ${ff2Y + ffH + 12} L ${cx + 12} ${ff2Y + ffH + 6}`} fill="none" stroke={wireIn} strokeWidth={1.5} />
+          <path d={`M ${bodyRight} ${pinY(9)} L ${ffX + ffW + 28} ${pinY(9)} L ${ffX + ffW + 28} ${ff2Y + 34} L ${ffX} ${ff2Y + 34}`} fill="none" stroke={wireIn} strokeWidth={1.5} />
+          <path d={`M ${bodyRight} ${pinY(12)} L ${ffX + ffW + 22} ${pinY(12)} L ${ffX + ffW + 22} ${ff2Y + ffH - 28} L ${ffX} ${ff2Y + ffH - 28}`} fill="none" stroke={wireIn} strokeWidth={1.5} />
+          <path d={`M ${ffX + ffW} ${ff2Y + 12} L ${ffX + ffW + 14} ${ff2Y + 12} L ${ffX + ffW + 14} ${pinY(11)} L ${bodyRight} ${pinY(11)}`} fill="none" stroke={wireOut} strokeWidth={1.6} />
+          <path d={`M ${ffX + ffW + 6} ${ff2Y + ffH - 10} L ${ffX + ffW + 18} ${ff2Y + ffH - 10} L ${ffX + ffW + 18} ${pinY(10)} L ${bodyRight} ${pinY(10)}`} fill="none" stroke={wireOut} strokeWidth={1.6} />
+          {renderFlipFlopSymbol(ffX, ff2Y, ffW, ffH, 'JK-FF 2', { negEdgeClk: true, hasPre: true, hasClr: true, topLabel: '2J(9) · 2K(12)' })}
+        </g>
+      );
+    }
 
-    return (
-      <g>
-        {stages.map((st, sIdx) => {
-          const sy = innerTop + sIdx * (stageH + gap);
-          const sMidY = sy + (stageH + 18) / 2;
-          const [subLine1, subLine2] = splitSubtitle(st.subtitle);
+    // 7. 4-Bit Binary Full Adder with Fast Carry (7483) — 4 cascaded Full Adder XOR+AND+OR gate networks
+    if (p === '7483') {
+      const stageX = bodyX + 18;
+      const stageW = bodyW - 36;
+      const stageH = 92;
+      const gap = 14;
+      const startY = topPad + 28;
+      const faConfigs = [
+        { bit: 1, aPin: 10, bPin: 11, sPin: 9, aL: 'A1(10)', bL: 'B1(11)', sL: 'S1(9)', cIn: 'C0(13)', cOut: 'C1' },
+        { bit: 2, aPin: 8, bPin: 7, sPin: 6, aL: 'A2(8)', bL: 'B2(7)', sL: 'S2(6)', cIn: 'C1', cOut: 'C2' },
+        { bit: 3, aPin: 3, bPin: 4, sPin: 2, aL: 'A3(3)', bL: 'B3(4)', sL: 'S3(2)', cIn: 'C2', cOut: 'C3' },
+        { bit: 4, aPin: 1, bPin: 16, sPin: 15, aL: 'A4(1)', bL: 'B4(16)', sL: 'S4(15)', cIn: 'C3', cOut: 'C4(14)' },
+      ];
+      return (
+        <g>
+          {/* C0 (Pin 13) carry-in trace to FA1 */}
+          <path d={`M ${bodyRight} ${pinY(13)} L ${stageX + stageW + 10} ${pinY(13)} L ${stageX + stageW + 10} ${startY - 6} L ${stageX + 68} ${startY - 6} L ${stageX + 68} ${startY + 4}`} fill="none" stroke={wireIn} strokeWidth={1.6} />
+          {faConfigs.map((fa, idx) => {
+            const sy = startY + idx * (stageH + gap);
+            const cy = sy + stageH / 2;
+            const aSideX = fa.aPin <= half ? bodyX : bodyRight;
+            const bSideX = fa.bPin <= half ? bodyX : bodyRight;
+            const sSideX = fa.sPin <= half ? bodyX : bodyRight;
+            return (
+              <g key={fa.bit}>
+                <path d={`M ${aSideX} ${pinY(fa.aPin)} L ${fa.aPin <= half ? stageX - 6 : stageX + stageW + 6} ${pinY(fa.aPin)} L ${fa.aPin <= half ? stageX - 6 : stageX + stageW + 6} ${cy - 10} L ${stageX + 8} ${cy - 10}`} fill="none" stroke={wireIn} strokeWidth={1.3} />
+                <path d={`M ${bSideX} ${pinY(fa.bPin)} L ${fa.bPin <= half ? stageX - 10 : stageX + stageW + 8} ${pinY(fa.bPin)} L ${fa.bPin <= half ? stageX - 10 : stageX + stageW + 8} ${cy + 2} L ${stageX + 8} ${cy + 2}`} fill="none" stroke={wireIn} strokeWidth={1.3} />
+                <path d={`M ${stageX + stageW - 8} ${cy - 6} L ${fa.sPin <= half ? stageX - 12 : stageX + stageW + 12} ${cy - 6} L ${fa.sPin <= half ? stageX - 12 : stageX + stageW + 12} ${pinY(fa.sPin)} L ${sSideX} ${pinY(fa.sPin)}`} fill="none" stroke={wireOut} strokeWidth={1.5} />
+                {renderFullAdderGateNetwork(stageX, sy, stageW, stageH, fa.bit, fa.aL, fa.bL, fa.sL, fa.cIn, fa.cOut)}
+                {idx < 3 && (
+                  <path d={`M ${stageX + 204} ${sy + stageH} L ${stageX + 204} ${sy + stageH + gap / 2} L ${stageX + 68} ${sy + stageH + gap / 2} L ${stageX + 68} ${sy + stageH + gap + 4}`} fill="none" stroke="#456A83" strokeWidth={1.5} strokeDasharray="3 1.5" />
+                )}
+              </g>
+            );
+          })}
+          {/* C4 (Pin 14) Carry-Out trace */}
+          <path d={`M ${stageX + 204} ${startY + 3 * (stageH + gap) + stageH} L ${stageX + 204} ${pinY(14)} L ${bodyRight} ${pinY(14)}`} fill="none" stroke={wireOut} strokeWidth={1.6} />
+        </g>
+      );
+    }
 
-          return (
-            <g key={sIdx}>
-              {/* Pin-to-Stage Internal Connection Lines (Left Pins) */}
-              {st.leftPins.map((pNum) => {
-                const py = pinY(pNum);
-                const pDef = ic.pins.find((p) => p.pin === pNum);
-                const isOut =
-                  pDef?.direction === 'output' || pDef?.direction === 'open-collector';
-                const targetY = Math.max(sy + 10, Math.min(sy + stageH - 10, py));
-                return (
-                  <g key={`lp-${pNum}`}>
-                    <path
-                      d={`M ${bodyX} ${py} L ${innerX - 8} ${py} L ${innerX - 8} ${targetY} L ${innerX} ${targetY}`}
-                      fill="none"
-                      stroke={isOut ? '#3B5746' : '#2C5E8A'}
-                      strokeWidth={1.5}
-                    />
-                    <circle
-                      cx={innerX}
-                      cy={targetY}
-                      r={2.4}
-                      fill={isOut ? '#3B5746' : '#2C5E8A'}
-                    />
-                  </g>
-                );
-              })}
-
-              {/* Pin-to-Stage Internal Connection Lines (Right Pins) */}
-              {st.rightPins.map((pNum) => {
-                const py = pinY(pNum);
-                const pDef = ic.pins.find((p) => p.pin === pNum);
-                const isOut =
-                  pDef?.direction === 'output' || pDef?.direction === 'open-collector';
-                const targetY = Math.max(sy + 10, Math.min(sy + stageH - 10, py));
-                return (
-                  <g key={`rp-${pNum}`}>
-                    <path
-                      d={`M ${bodyRight} ${py} L ${innerX + innerW + 8} ${py} L ${innerX + innerW + 8} ${targetY} L ${innerX + innerW} ${targetY}`}
-                      fill="none"
-                      stroke={isOut ? '#3B5746' : '#2C5E8A'}
-                      strokeWidth={1.5}
-                    />
-                    <circle
-                      cx={innerX + innerW}
-                      cy={targetY}
-                      r={2.4}
-                      fill={isOut ? '#3B5746' : '#2C5E8A'}
-                    />
-                  </g>
-                );
-              })}
-
-              {/* Internal Cascaded Functional Block */}
-              <rect
-                x={innerX}
-                y={sy}
-                width={innerW}
-                height={stageH}
-                rx={4}
-                fill="#FFFFFF"
-                stroke="#303840"
-                strokeWidth={1.4}
-              />
-              <rect
-                x={innerX}
-                y={sy}
-                width={innerW}
-                height={20}
-                rx={3}
-                fill="#303840"
-              />
-              <text
-                x={cx}
-                y={sy + 13.5}
-                textAnchor="middle"
-                fill="#F1F0EB"
-                fontSize={st.title.length > 36 ? 7.3 : 8.1}
-                fontWeight={700}
-                fontFamily="IBM Plex Mono, monospace"
-              >
-                {st.title}
-              </text>
-
-              {subLine2 ? (
-                <>
-                  <text
-                    x={cx}
-                    y={sMidY - 3}
-                    textAnchor="middle"
-                    fill="#20252B"
-                    fontSize={7.4}
-                    fontWeight={600}
-                    fontFamily="IBM Plex Mono, monospace"
-                  >
-                    {subLine1}
-                  </text>
-                  <text
-                    x={cx}
-                    y={sMidY + 9}
-                    textAnchor="middle"
-                    fill="#3B5746"
-                    fontSize={7.3}
-                    fontWeight={600}
-                    fontFamily="IBM Plex Mono, monospace"
-                  >
-                    {subLine2}
-                  </text>
-                </>
-              ) : (
-                <text
-                  x={cx}
-                  y={sMidY + 3}
-                  textAnchor="middle"
-                  fill="#20252B"
-                  fontSize={7.6}
-                  fontWeight={600}
-                  fontFamily="IBM Plex Mono, monospace"
-                >
-                  {subLine1}
-                </text>
-              )}
-
-              {/* Cascade Bus / Inter-Stage Link to Next Stage */}
-              {sIdx < stages.length - 1 && (
-                <g>
-                  <line
-                    x1={cx - 32}
-                    y1={sy + stageH}
-                    x2={cx - 32}
-                    y2={sy + stageH + gap}
-                    stroke="#456A83"
-                    strokeWidth={1.6}
-                    strokeDasharray="3 2"
-                  />
-                  <line
-                    x1={cx + 32}
-                    y1={sy + stageH}
-                    x2={cx + 32}
-                    y2={sy + stageH + gap}
-                    stroke="#456A83"
-                    strokeWidth={1.6}
-                    strokeDasharray="3 2"
-                  />
-                  <polygon
-                    points={`${cx - 32},${sy + stageH + gap} ${cx - 36},${sy + stageH + gap - 6} ${cx - 28},${sy + stageH + gap - 6}`}
-                    fill="#456A83"
-                  />
-                  <polygon
-                    points={`${cx + 32},${sy + stageH + gap} ${cx + 28},${sy + stageH + gap - 6} ${cx + 36},${sy + stageH + gap - 6}`}
-                    fill="#456A83"
-                  />
-                  {st.cascadeLabel && (
-                    <text
-                      x={cx}
-                      y={sy + stageH + gap / 2 + 3}
-                      textAnchor="middle"
-                      fill="#456A83"
-                      fontSize={7.2}
-                      fontWeight={700}
-                      fontFamily="IBM Plex Mono, monospace"
-                    >
-                      {st.cascadeLabel}
-                    </text>
-                  )}
-                </g>
+    // 8. Decade (7490) and 4-Bit Binary (7493) Ripple Counters — 4 JK/T Flip-Flop stages + NAND Reset Gates
+    if (p === '7490' || p === '7493') {
+      const is90 = p === '7490';
+      const ffW = 78;
+      const ffH = 62;
+      const ffX = cx - ffW / 2 - 14;
+      const ffs = [
+        { name: 'FF-A (÷2)', clkPin: 14, qPin: 12, y: topPad + 30, top: 'CKA(14)→QA(12)' },
+        { name: 'FF-B', clkPin: 1, qPin: 9, y: topPad + 110, top: 'CKB(1)→QB(9)' },
+        { name: 'FF-C', clkPin: 0, qPin: 8, y: topPad + 190, top: 'QB→QC(8)' },
+        { name: 'FF-D', clkPin: 0, qPin: 11, y: topPad + 270, top: is90 ? 'BCD QD(11)' : 'QC→QD(11)' },
+      ];
+      const r0GateX = cx + 58;
+      const r0GateY = topPad + 86;
+      const r9GateY = topPad + 216;
+      return (
+        <g>
+          {ffs.map((f, i) => (
+            <g key={f.name}>
+              {renderFlipFlopSymbol(ffX, f.y, ffW, ffH, f.name, { negEdgeClk: true, hasClr: true, topLabel: f.top })}
+              <path d={`M ${ffX + ffW} ${f.y + 12} L ${ffX + ffW + 22} ${f.y + 12} L ${ffX + ffW + 22} ${pinY(f.qPin)} L ${bodyRight} ${pinY(f.qPin)}`} fill="none" stroke={wireOut} strokeWidth={1.6} />
+              {i >= 1 && i < 3 && (
+                <path d={`M ${ffX + ffW} ${f.y + 12} L ${ffX - 14} ${f.y + ffH + 8} L ${ffX - 14} ${ffs[i + 1].y + ffH / 2} L ${ffX - 6} ${ffs[i + 1].y + ffH / 2}`} fill="none" stroke="#456A83" strokeWidth={1.4} strokeDasharray="3 1.5" />
               )}
             </g>
-          );
-        })}
-      </g>
-    );
+          ))}
+          <path d={`M ${bodyRight} ${pinY(14)} L ${ffX - 16} ${pinY(14)} L ${ffX - 16} ${ffs[0].y + ffH / 2} L ${ffX - 6} ${ffs[0].y + ffH / 2}`} fill="none" stroke={wireIn} strokeWidth={1.6} />
+          <path d={`M ${bodyX} ${pinY(1)} L ${ffX - 18} ${pinY(1)} L ${ffX - 18} ${ffs[1].y + ffH / 2} L ${ffX - 6} ${ffs[1].y + ffH / 2}`} fill="none" stroke={wireIn} strokeWidth={1.6} />
+          <path d={`M ${bodyX} ${pinY(2)} L ${r0GateX - 16} ${r0GateY - 6}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+          <path d={`M ${bodyX} ${pinY(3)} L ${r0GateX - 16} ${r0GateY + 6}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+          {renderMiniGateInPackage('NAND', r0GateX, r0GateY, 'right')}
+          <path d={`M ${r0GateX + 19} ${r0GateY} L ${r0GateX + 30} ${r0GateY} L ${r0GateX + 30} ${ffs[3].y + ffH + 10} L ${ffX + ffW / 2 + 12} ${ffs[3].y + ffH + 10}`} fill="none" stroke="#7A4848" strokeWidth={1.3} strokeDasharray="2.5 1.5" />
+          {is90 && (
+            <g>
+              <path d={`M ${bodyX} ${pinY(6)} L ${r0GateX - 16} ${r9GateY - 6}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+              <path d={`M ${bodyX} ${pinY(7)} L ${r0GateX - 16} ${r9GateY + 6}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+              {renderMiniGateInPackage('NAND', r0GateX, r9GateY, 'right')}
+              <text x={r0GateX} y={r9GateY - 16} textAnchor="middle" fill="#7A4848" fontSize={7} fontWeight={700} fontFamily="IBM Plex Mono, monospace">R9(6,7)→SET 9</text>
+            </g>
+          )}
+        </g>
+      );
+    }
+
+    // 9. 3-to-8 Line Decoder (74138) & Dual 2-to-4 Line Decoder (74139) — Select Inverters + Multi-Input NAND Decoder Array
+    if (p === '74138' || p === '74139') {
+      const busX1 = bodyX + 46;
+      const busX2 = bodyX + 64;
+      const busX3 = bodyX + 82;
+      const nandX = cx + 44;
+      if (p === '74138') {
+        const outPins = [15, 14, 13, 12, 11, 10, 9, 7];
+        return (
+          <g>
+            {[1, 2, 3].map((pin, idx) => {
+              const bx = busX1 + idx * 18;
+              return (
+                <g key={pin}>
+                  <path d={`M ${bodyX} ${pinY(pin)} L ${bx} ${pinY(pin)} L ${bx} ${topPad + bodyH - 22}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+                  {renderMiniGateInPackage('NOT', bx + 9, pinY(pin) + 20, 'right')}
+                </g>
+              );
+            })}
+            <path d={`M ${bodyX} ${pinY(4)} L ${busX3 + 22} ${pinY(4)}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+            <path d={`M ${bodyX} ${pinY(5)} L ${busX3 + 22} ${pinY(5)}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+            <path d={`M ${bodyX} ${pinY(6)} L ${busX3 + 22} ${pinY(6)}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+            {renderMiniGateInPackage('AND', busX3 + 36, pinY(5), 'right')}
+            {outPins.map((outPin, idx) => {
+              const gy = topPad + 44 + idx * 50;
+              const isLeft = outPin <= half;
+              return (
+                <g key={outPin}>
+                  <line x1={busX1} y1={gy - 5} x2={nandX - 16} y2={gy - 5} stroke={wireInternal} strokeWidth={1.2} />
+                  <line x1={busX2} y1={gy} x2={nandX - 16} y2={gy} stroke={wireInternal} strokeWidth={1.2} />
+                  <line x1={busX3} y1={gy + 5} x2={nandX - 16} y2={gy + 5} stroke={wireInternal} strokeWidth={1.2} />
+                  {renderMiniGateInPackage('NAND', nandX, gy, 'right')}
+                  <path
+                    d={`M ${nandX + 19} ${gy} L ${isLeft ? bodyX + 20 : nandX + 42} ${gy} L ${isLeft ? bodyX + 20 : nandX + 42} ${pinY(outPin)} L ${isLeft ? bodyX : bodyRight} ${pinY(outPin)}`}
+                    fill="none"
+                    stroke={wireOut}
+                    strokeWidth={1.5}
+                  />
+                </g>
+              );
+            })}
+          </g>
+        );
+      }
+      return (
+        <g>
+          <path d={`M ${bodyX} ${pinY(1)} L ${busX1} ${pinY(1)} L ${busX1} ${pinY(7) + 10}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+          <path d={`M ${bodyX} ${pinY(2)} L ${busX2} ${pinY(2)} L ${busX2} ${pinY(7) + 10}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+          <path d={`M ${bodyX} ${pinY(3)} L ${busX3} ${pinY(3)} L ${busX3} ${pinY(7) + 10}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+          {[4, 5, 6, 7].map((outPin) => (
+            <g key={outPin}>
+              <line x1={busX1} y1={pinY(outPin) - 5} x2={cx - 24} y2={pinY(outPin) - 5} stroke={wireInternal} strokeWidth={1.2} />
+              <line x1={busX2} y1={pinY(outPin)} x2={cx - 24} y2={pinY(outPin)} stroke={wireInternal} strokeWidth={1.2} />
+              <line x1={busX3} y1={pinY(outPin) + 5} x2={cx - 24} y2={pinY(outPin) + 5} stroke={wireInternal} strokeWidth={1.2} />
+              {renderMiniGateInPackage('NAND', cx - 8, pinY(outPin), 'left')}
+              <line x1={cx - 27} y1={pinY(outPin)} x2={bodyX} y2={pinY(outPin)} stroke={wireOut} strokeWidth={1.6} />
+            </g>
+          ))}
+          <path d={`M ${bodyRight} ${pinY(15)} L ${bodyRight - 44} ${pinY(15)} L ${bodyRight - 44} ${pinY(9) + 10}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+          <path d={`M ${bodyRight} ${pinY(14)} L ${bodyRight - 60} ${pinY(14)} L ${bodyRight - 60} ${pinY(9) + 10}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+          <path d={`M ${bodyRight} ${pinY(13)} L ${bodyRight - 76} ${pinY(13)} L ${bodyRight - 76} ${pinY(9) + 10}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+          {[12, 11, 10, 9].map((outPin) => (
+            <g key={outPin}>
+              <line x1={bodyRight - 76} y1={pinY(outPin) - 5} x2={cx + 24} y2={pinY(outPin) - 5} stroke={wireInternal} strokeWidth={1.2} />
+              <line x1={bodyRight - 60} y1={pinY(outPin)} x2={cx + 24} y2={pinY(outPin)} stroke={wireInternal} strokeWidth={1.2} />
+              <line x1={bodyRight - 44} y1={pinY(outPin) + 5} x2={cx + 24} y2={pinY(outPin) + 5} stroke={wireInternal} strokeWidth={1.2} />
+              {renderMiniGateInPackage('NAND', cx + 40, pinY(outPin), 'right')}
+              <line x1={cx + 59} y1={pinY(outPin)} x2={bodyRight} y2={pinY(outPin)} stroke={wireOut} strokeWidth={1.6} />
+            </g>
+          ))}
+        </g>
+      );
+    }
+
+    // 10. 8-to-1 Multiplexer (74151) & Dual 4-to-1 Multiplexer (74153) — AND-OR Gate Array + Select Inverters
+    if (p === '74151' || p === '74153') {
+      const andX = cx - 22;
+      const orX = cx + 44;
+      if (p === '74151') {
+        const dPins = [4, 3, 2, 1, 15, 14, 13, 12];
+        const orY = pinY(5);
+        return (
+          <g>
+            {[11, 10, 9].map((sPin, idx) => (
+              <path key={sPin} d={`M ${bodyRight} ${pinY(sPin)} L ${andX - 30 - idx * 10} ${pinY(sPin)} L ${andX - 30 - idx * 10} ${topPad + 36}`} fill="none" stroke={wireIn} strokeWidth={1.2} />
+            ))}
+            <path d={`M ${bodyX} ${pinY(7)} L ${andX - 20} ${pinY(7)} L ${andX - 20} ${topPad + 36}`} fill="none" stroke={wireIn} strokeWidth={1.3} />
+            {dPins.map((dPin, idx) => {
+              const gy = topPad + 42 + idx * 48;
+              const isLeft = dPin <= half;
+              return (
+                <g key={dPin}>
+                  <path d={`M ${isLeft ? bodyX : bodyRight} ${pinY(dPin)} L ${isLeft ? andX - 16 : andX + 26} ${pinY(dPin)} L ${andX - 16} ${gy}`} fill="none" stroke={wireIn} strokeWidth={1.3} />
+                  {renderMiniGateInPackage('AND', andX, gy, 'right')}
+                  <path d={`M ${andX + 14} ${gy} L ${orX - 16} ${orY + (idx - 3.5) * 3}`} fill="none" stroke={wireInternal} strokeWidth={1.2} />
+                </g>
+              );
+            })}
+            {renderMiniGateInPackage('OR', orX, orY, 'right')}
+            <path d={`M ${orX + 16} ${orY} L ${orX + 28} ${orY} L ${orX + 28} ${pinY(5)} L ${bodyX} ${pinY(5)}`} fill="none" stroke={wireOut} strokeWidth={1.6} />
+            {renderMiniGateInPackage('NOT', orX, pinY(6), 'left')}
+            <path d={`M ${orX + 28} ${orY} L ${orX + 28} ${pinY(6)} L ${orX + 14} ${pinY(6)}`} fill="none" stroke={wireInternal} strokeWidth={1.4} />
+            <line x1={orX - 19} y1={pinY(6)} x2={bodyX} y2={pinY(6)} stroke={wireOut} strokeWidth={1.6} />
+          </g>
+        );
+      }
+      return (
+        <g>
+          <path d={`M ${bodyX} ${pinY(2)} L ${cx} ${pinY(2)} L ${cx} ${topPad + bodyH - 28}`} fill="none" stroke="#456A83" strokeWidth={1.4} strokeDasharray="3 1.5" />
+          <path d={`M ${bodyRight} ${pinY(14)} L ${cx + 12} ${pinY(14)} L ${cx + 12} ${topPad + bodyH - 28}`} fill="none" stroke="#456A83" strokeWidth={1.4} strokeDasharray="3 1.5" />
+          {[3, 4, 5, 6].map((cPin) => (
+            <g key={cPin}>
+              <line x1={bodyX} y1={pinY(cPin)} x2={cx - 64} y2={pinY(cPin)} stroke={wireIn} strokeWidth={1.4} />
+              <line x1={cx} y1={pinY(cPin) + 5} x2={cx - 64} y2={pinY(cPin) + 5} stroke="#456A83" strokeWidth={1.1} />
+              {renderMiniGateInPackage('AND', cx - 48, pinY(cPin), 'right')}
+              <path d={`M ${cx - 34} ${pinY(cPin)} L ${cx - 18} ${pinY(7)}`} fill="none" stroke={wireInternal} strokeWidth={1.2} />
+            </g>
+          ))}
+          {renderMiniGateInPackage('OR', cx - 32, pinY(7), 'left')}
+          <line x1={cx - 48} y1={pinY(7)} x2={bodyX} y2={pinY(7)} stroke={wireOut} strokeWidth={1.7} />
+          {[13, 12, 11, 10].map((cPin) => (
+            <g key={cPin}>
+              <line x1={bodyRight} y1={pinY(cPin)} x2={cx + 64} y2={pinY(cPin)} stroke={wireIn} strokeWidth={1.4} />
+              <line x1={cx + 12} y1={pinY(cPin) + 5} x2={cx + 64} y2={pinY(cPin) + 5} stroke="#456A83" strokeWidth={1.1} />
+              {renderMiniGateInPackage('AND', cx + 48, pinY(cPin), 'left')}
+              <path d={`M ${cx + 34} ${pinY(cPin)} L ${cx + 28} ${pinY(9)}`} fill="none" stroke={wireInternal} strokeWidth={1.2} />
+            </g>
+          ))}
+          {renderMiniGateInPackage('OR', cx + 44, pinY(9), 'right')}
+          <line x1={cx + 60} y1={pinY(9)} x2={bodyRight} y2={pinY(9)} stroke={wireOut} strokeWidth={1.7} />
+        </g>
+      );
+    }
+
+    // 11. 4-Bit Magnitude Comparator (7485) — 4 XNOR Bit-Equality Gates + Magnitude AND/OR Expander Tree
+    if (p === '7485') {
+      const bitPairs = [
+        { bit: 3, aPin: 15, bPin: 1, y: topPad + 64, label: 'A3=B3' },
+        { bit: 2, aPin: 13, bPin: 14, y: topPad + 144, label: 'A2=B2' },
+        { bit: 1, aPin: 12, bPin: 11, y: topPad + 224, label: 'A1=B1' },
+        { bit: 0, aPin: 10, bPin: 9, y: topPad + 304, label: 'A0=B0' },
+      ];
+      const xnorX = cx + 32;
+      const outGateX = cx - 44;
+      return (
+        <g>
+          {bitPairs.map((bp) => (
+            <g key={bp.bit}>
+              <path d={`M ${bp.aPin <= half ? bodyX : bodyRight} ${pinY(bp.aPin)} L ${xnorX + 24} ${pinY(bp.aPin)} L ${xnorX + 24} ${bp.y - 6} L ${xnorX + 18} ${bp.y - 6}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+              <path d={`M ${bp.bPin <= half ? bodyX : bodyRight} ${pinY(bp.bPin)} L ${bp.bPin <= half ? xnorX - 44 : xnorX + 30} ${pinY(bp.bPin)} L ${xnorX + 18} ${bp.y + 6}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+              {renderMiniGateInPackage('XNOR', xnorX, bp.y, 'left')}
+              <path d={`M ${xnorX - 21} ${bp.y} L ${outGateX + 22} ${pinY(6)}`} fill="none" stroke={wireInternal} strokeWidth={1.2} />
+            </g>
+          ))}
+          <path d={`M ${bodyX} ${pinY(2)} L ${outGateX + 20} ${pinY(2)} L ${outGateX + 20} ${pinY(7)}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+          <path d={`M ${bodyX} ${pinY(3)} L ${outGateX + 16} ${pinY(3)} L ${outGateX + 16} ${pinY(6)}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+          <path d={`M ${bodyX} ${pinY(4)} L ${outGateX + 18} ${pinY(4)} L ${outGateX + 18} ${pinY(5)}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+          {renderMiniGateInPackage('OR', outGateX, pinY(5), 'left')}
+          {renderMiniGateInPackage('AND', outGateX, pinY(6), 'left')}
+          {renderMiniGateInPackage('OR', outGateX, pinY(7), 'left')}
+          <line x1={outGateX - 16} y1={pinY(5)} x2={bodyX} y2={pinY(5)} stroke={wireOut} strokeWidth={1.7} />
+          <line x1={outGateX - 14} y1={pinY(6)} x2={bodyX} y2={pinY(6)} stroke={wireOut} strokeWidth={1.7} />
+          <line x1={outGateX - 16} y1={pinY(7)} x2={bodyX} y2={pinY(7)} stroke={wireOut} strokeWidth={1.7} />
+        </g>
+      );
+    }
+
+    // 12. 8-to-3 Priority Encoder (74148) — Priority Masking AND Array + 3 Active-Low NAND Output Encoders
+    if (p === '74148') {
+      const inPins = [4, 3, 2, 1, 13, 12, 11, 10];
+      const outNands = [
+        { pin: 6, label: '~A2', y: pinY(6), side: 'left' as const },
+        { pin: 7, label: '~A1', y: pinY(7), side: 'left' as const },
+        { pin: 9, label: '~A0', y: pinY(9), side: 'right' as const },
+        { pin: 14, label: '~GS', y: pinY(14), side: 'right' as const },
+        { pin: 15, label: '~EO', y: pinY(15), side: 'right' as const },
+      ];
+      return (
+        <g>
+          <path d={`M ${bodyX} ${pinY(5)} L ${cx - 46} ${pinY(5)}`} fill="none" stroke={wireIn} strokeWidth={1.5} />
+          {renderMiniGateInPackage('NOT', cx - 30, pinY(5), 'right')}
+          {inPins.map((inPin) => {
+            const isLeft = inPin <= half;
+            return (
+              <path
+                key={inPin}
+                d={`M ${isLeft ? bodyX : bodyRight} ${pinY(inPin)} L ${cx} ${pinY(inPin)}`}
+                fill="none"
+                stroke={wireIn}
+                strokeWidth={1.3}
+              />
+            );
+          })}
+          <line x1={cx} y1={pinY(1)} x2={cx} y2={pinY(9)} stroke="#456A83" strokeWidth={2} />
+          {outNands.map((og) => {
+            const gx = og.side === 'left' ? cx - 42 : cx + 42;
+            return (
+              <g key={og.pin}>
+                <line x1={cx} y1={og.y - 5} x2={og.side === 'left' ? gx + 16 : gx - 16} y2={og.y - 5} stroke={wireInternal} strokeWidth={1.3} />
+                <line x1={cx} y1={og.y + 5} x2={og.side === 'left' ? gx + 16 : gx - 16} y2={og.y + 5} stroke={wireInternal} strokeWidth={1.3} />
+                {renderMiniGateInPackage('NAND', gx, og.y, og.side)}
+                <line
+                  x1={og.side === 'left' ? gx - 19 : gx + 19}
+                  y1={og.y}
+                  x2={og.side === 'left' ? bodyX : bodyRight}
+                  y2={og.y}
+                  stroke={wireOut}
+                  strokeWidth={1.6}
+                />
+              </g>
+            );
+          })}
+        </g>
+      );
+    }
+
+    // 13. BCD-to-7-Segment Decoders (7446 / 7447) — BCD Inverters + AND-NAND Segment Matrix driving ~a..~g
+    if (p === '7446' || p === '7447') {
+      const bcdPins = [7, 1, 2, 6];
+      const segPins = [13, 12, 11, 10, 9, 15, 14];
+      const busX = bodyX + 64;
+      const gateX = cx + 42;
+      return (
+        <g>
+          {bcdPins.map((bPin, idx) => {
+            const bx = busX + idx * 14;
+            return (
+              <g key={bPin}>
+                <path d={`M ${bodyX} ${pinY(bPin)} L ${bx} ${pinY(bPin)} L ${bx} ${topPad + bodyH - 24}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+                {renderMiniGateInPackage('NOT', bx, pinY(bPin) + 22, 'right')}
+              </g>
+            );
+          })}
+          <path d={`M ${bodyX} ${pinY(3)} L ${busX - 18} ${pinY(4) - 6}`} fill="none" stroke={wireIn} strokeWidth={1.3} />
+          <path d={`M ${bodyX} ${pinY(5)} L ${busX - 18} ${pinY(4) + 6}`} fill="none" stroke={wireIn} strokeWidth={1.3} />
+          {renderMiniGateInPackage('NAND', busX - 2, pinY(4), 'left')}
+          <line x1={busX - 21} y1={pinY(4)} x2={bodyX} y2={pinY(4)} stroke={wireOut} strokeWidth={1.5} />
+          {segPins.map((sPin) => (
+            <g key={sPin}>
+              <line x1={busX} y1={pinY(sPin) - 5} x2={gateX - 16} y2={pinY(sPin) - 5} stroke={wireInternal} strokeWidth={1.2} />
+              <line x1={busX + 14} y1={pinY(sPin)} x2={gateX - 16} y2={pinY(sPin)} stroke={wireInternal} strokeWidth={1.2} />
+              <line x1={busX + 28} y1={pinY(sPin) + 5} x2={gateX - 16} y2={pinY(sPin) + 5} stroke={wireInternal} strokeWidth={1.2} />
+              {renderMiniGateInPackage('NAND', gateX, pinY(sPin), 'right')}
+              <line x1={gateX + 19} y1={pinY(sPin)} x2={bodyRight} y2={pinY(sPin)} stroke={wireOut} strokeWidth={1.6} />
+            </g>
+          ))}
+        </g>
+      );
+    }
+
+    // 14. 4-Bit Parallel-Access Shift Register (7495) & Synchronous Up/Down Counter (74192) — 4 Cascaded Flip-Flops + Mode/Clock Gating
+    if (p === '7495' || p === '74192') {
+      const is95 = p === '7495';
+      const ffW = 78;
+      const ffH = 62;
+      const ffX = cx - ffW / 2 + 12;
+      const stages = is95
+        ? [
+            { name: 'SR-A', inPin: 2, outPin: 13, y: topPad + 32, top: 'A(2)→QA(13)' },
+            { name: 'SR-B', inPin: 3, outPin: 12, y: topPad + 112, top: 'B(3)→QB(12)' },
+            { name: 'SR-C', inPin: 4, outPin: 11, y: topPad + 192, top: 'C(4)→QC(11)' },
+            { name: 'SR-D', inPin: 5, outPin: 10, y: topPad + 272, top: 'D(5)→QD(10)' },
+          ]
+        : [
+            { name: 'FF-A', inPin: 15, outPin: 3, y: topPad + 48, top: 'A(15)→QA(3)' },
+            { name: 'FF-B', inPin: 1, outPin: 2, y: topPad + 132, top: 'B(1)→QB(2)' },
+            { name: 'FF-C', inPin: 10, outPin: 6, y: topPad + 216, top: 'C(10)→QC(6)' },
+            { name: 'FF-D', inPin: 9, outPin: 7, y: topPad + 300, top: 'D(9)→QD(7)' },
+          ];
+      return (
+        <g>
+          {is95 ? (
+            <g>
+              <path d={`M ${bodyX} ${pinY(1)} L ${ffX} ${stages[0].y + 20}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+              <path d={`M ${bodyX} ${pinY(6)} L ${cx - 56} ${pinY(6)}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+              <path d={`M ${bodyRight} ${pinY(9)} L ${cx - 56} ${pinY(6) - 8}`} fill="none" stroke={wireIn} strokeWidth={1.3} />
+              <path d={`M ${bodyRight} ${pinY(8)} L ${cx - 56} ${pinY(6) + 8}`} fill="none" stroke={wireIn} strokeWidth={1.3} />
+              {renderMiniGateInPackage('OR', cx - 42, pinY(6), 'right')}
+            </g>
+          ) : (
+            <g>
+              <path d={`M ${bodyX} ${pinY(5)} L ${cx - 54} ${pinY(5)}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+              <path d={`M ${bodyX} ${pinY(4)} L ${cx - 54} ${pinY(4)}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+              {renderMiniGateInPackage('AND', cx - 38, (pinY(4) + pinY(5)) / 2, 'right')}
+              {renderMiniGateInPackage('NAND', cx + 56, pinY(12), 'right')}
+              <line x1={cx + 75} y1={pinY(12)} x2={bodyRight} y2={pinY(12)} stroke={wireOut} strokeWidth={1.5} />
+              {renderMiniGateInPackage('NAND', cx + 56, pinY(13), 'right')}
+              <line x1={cx + 75} y1={pinY(13)} x2={bodyRight} y2={pinY(13)} stroke={wireOut} strokeWidth={1.5} />
+            </g>
+          )}
+          {stages.map((st, idx) => {
+            const inIsLeft = st.inPin <= half;
+            const outIsLeft = st.outPin <= half;
+            return (
+              <g key={st.name}>
+                {renderFlipFlopSymbol(ffX, st.y, ffW, ffH, st.name, { negEdgeClk: is95, hasClr: !is95, topLabel: st.top })}
+                <path d={`M ${inIsLeft ? bodyX : bodyRight} ${pinY(st.inPin)} L ${ffX} ${st.y + 34}`} fill="none" stroke={wireIn} strokeWidth={1.3} />
+                <path d={`M ${ffX + ffW} ${st.y + 12} L ${outIsLeft ? bodyX : bodyRight} ${pinY(st.outPin)}`} fill="none" stroke={wireOut} strokeWidth={1.5} />
+                {idx < 3 && (
+                  <path d={`M ${ffX + ffW} ${st.y + 12} L ${ffX + ffW + 14} ${st.y + 12} L ${ffX + ffW + 14} ${stages[idx + 1].y + 20} L ${ffX} ${stages[idx + 1].y + 20}`} fill="none" stroke="#456A83" strokeWidth={1.4} strokeDasharray="3 1.5" />
+                )}
+              </g>
+            );
+          })}
+        </g>
+      );
+    }
+
+    // 15. 2K × 8 Static CMOS RAM (6116, DIP-24) — Row/Column Address Decoder NANDs + Cross-Coupled Latch Matrix + Tri-State I/O Buffers
+    if (p === '6116') {
+      const addrLeft = [1, 2, 3, 4, 5, 6, 7, 8];
+      const addrRight = [23, 22, 19];
+      const ioPins = [9, 10, 11, 13, 14, 15, 16, 17];
+      const decX = cx - 44;
+      const cellX = cx - 54;
+      const cellY = topPad + 210;
+      const cellW = 108;
+      const cellH = 190;
+      return (
+        <g>
+          {addrLeft.map((aPin) => (
+            <line key={aPin} x1={bodyX} y1={pinY(aPin)} x2={decX - 18} y2={pinY(aPin)} stroke={wireIn} strokeWidth={1.3} />
+          ))}
+          {addrRight.map((aPin) => (
+            <path key={aPin} d={`M ${bodyRight} ${pinY(aPin)} L ${decX + 86} ${pinY(aPin)} L ${decX - 18} ${pinY(aPin - 15)}`} fill="none" stroke={wireIn} strokeWidth={1.2} />
+          ))}
+          <line x1={decX - 18} y1={pinY(1)} x2={decX - 18} y2={pinY(8)} stroke="#2C5E8A" strokeWidth={2.2} />
+          {[2, 4, 6, 8].map((rPin) => (
+            <g key={rPin}>
+              <line x1={decX - 18} y1={pinY(rPin) - 5} x2={decX - 2} y2={pinY(rPin) - 5} stroke={wireInternal} strokeWidth={1.2} />
+              <line x1={decX - 18} y1={pinY(rPin) + 5} x2={decX - 2} y2={pinY(rPin) + 5} stroke={wireInternal} strokeWidth={1.2} />
+              {renderMiniGateInPackage('AND', decX + 14, pinY(rPin), 'right')}
+            </g>
+          ))}
+
+          {/* 6T CMOS Static Latch Cell Array (Cross-Coupled Inverter Pairs) */}
+          <rect x={cellX} y={cellY} width={cellW} height={cellH} rx={4} fill="#FAF9F5" stroke="#20252B" strokeWidth={1.5} />
+          <text x={cx} y={cellY + 14} textAnchor="middle" fill="#20252B" fontSize={7.8} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
+            2K×8 CMOS LATCH MATRIX
+          </text>
+          {[0, 1, 2].map((row) => {
+            const ly = cellY + 42 + row * 50;
+            return (
+              <g key={row}>
+                {renderMiniGateInPackage('NOT', cx - 18, ly - 8, 'right')}
+                {renderMiniGateInPackage('NOT', cx + 18, ly + 8, 'left')}
+                <path d={`M ${cx - 2} ${ly - 8} L ${cx + 34} ${ly - 8} L ${cx + 34} ${ly + 8}`} fill="none" stroke="#456A83" strokeWidth={1.2} />
+                <path d={`M ${cx - 2} ${ly + 8} L ${cx - 34} ${ly + 8} L ${cx - 34} ${ly - 8}`} fill="none" stroke="#456A83" strokeWidth={1.2} />
+              </g>
+            );
+          })}
+
+          <path d={`M ${bodyRight} ${pinY(18)} L ${cx + 46} ${pinY(18)}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+          <path d={`M ${bodyRight} ${pinY(20)} L ${cx + 46} ${pinY(20)}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+          <path d={`M ${bodyRight} ${pinY(21)} L ${cx + 46} ${pinY(21)}`} fill="none" stroke={wireIn} strokeWidth={1.4} />
+          {renderMiniGateInPackage('NOR', cx + 30, pinY(20), 'left')}
+
+          {ioPins.map((ioPin) => {
+            const isLeft = ioPin <= half;
+            return (
+              <g key={ioPin}>
+                <path
+                  d={`M ${isLeft ? cellX : cellX + cellW} ${Math.max(cellY + 24, Math.min(cellY + cellH - 16, pinY(ioPin)))} L ${isLeft ? bodyX + 26 : bodyRight - 26} ${pinY(ioPin)} L ${isLeft ? bodyX : bodyRight} ${pinY(ioPin)}`}
+                  fill="none"
+                  stroke={wireOut}
+                  strokeWidth={1.4}
+                />
+                <polygon
+                  points={
+                    isLeft
+                      ? `${bodyX + 24},${pinY(ioPin) - 5} ${bodyX + 24},${pinY(ioPin) + 5} ${bodyX + 14},${pinY(ioPin)}`
+                      : `${bodyRight - 24},${pinY(ioPin) - 5} ${bodyRight - 24},${pinY(ioPin) + 5} ${bodyRight - 14},${pinY(ioPin)}`
+                  }
+                  fill="#FFFFFF"
+                  stroke="#3B5746"
+                  strokeWidth={1.2}
+                />
+              </g>
+            );
+          })}
+        </g>
+      );
+    }
+
+    return null;
   };
 
   return (
@@ -1085,7 +1336,7 @@ const DIPPinoutDiagram: React.FC<{ ic: ICDefinition }> = ({ ic }) => {
         fontWeight={700}
         fontFamily="IBM Plex Mono, monospace"
       >
-        {ic.partNumber} ({ic.packageType}) — INTERNAL PIN-TO-GATE / CASCADED STRUCTURE
+        {ic.partNumber} ({ic.packageType}) — INTERNAL GATE & PIN WIRING DIAGRAM
       </text>
 
       {/* DIP IC Molded Package Outline (Stretched to match Pin Configuration Table height) */}
@@ -1122,8 +1373,8 @@ const DIPPinoutDiagram: React.FC<{ ic: ICDefinition }> = ({ ic }) => {
       />
       <circle cx={bodyX + 16} cy={topPad + 14} r={3.5} fill="#20252B" />
 
-      {/* Internal Gate Symbols or Cascaded Functional Stages with Pin Wiring */}
-      {renderInternalGateWiring() ?? renderCascadedBlocksInPackage()}
+      {/* Internal Gate Symbols, Flip-Flops, Decoders, Full Adders & Latches Wired to Pins */}
+      {renderInternalGateWiring()}
 
       {/* Left & Right Numbered DIP Pin Boxes and Signal Labels */}
       {Array.from({ length: half }).map((_, idx) => {

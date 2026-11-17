@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
   Cpu,
   Download,
   Info,
@@ -9,6 +10,7 @@ import {
   PanelRightOpen,
   RotateCcw,
   Redo2,
+  Search,
   Sparkles,
   Trash2,
   Undo2,
@@ -16,7 +18,6 @@ import {
 } from 'lucide-react';
 import { canInsertIntoZif, getAllICDefinitions, getICDefinition } from '../ic-library';
 import {
-  classifyWireConnection,
   describeTerminalEndpoint,
   formatDirectionTag,
   getDisplayedZifPinInfo,
@@ -24,9 +25,129 @@ import {
 import { serializeProject } from '../storage/projectStorage';
 import { useLabStore } from '../store/useLabStore';
 import { WIRE_COLOR_HEX } from '../trainer/boardLayout';
-import { PlacedIC, WireColor, ZIFSocketId } from '../types/circuit';
+import { ICDefinition, PlacedIC, WireColor, ZIFSocketId } from '../types/circuit';
 import { ICInternalDiagram } from './ICInternalDiagram';
 import { TrainerBoardSVG } from './TrainerBoardSVG';
+
+/**
+ * Crisp miniature DIP IC package symbol displayed beside each IC in the search picker
+ * (inspired by the user's reference image, rendered in LogicBench's instrument aesthetic).
+ */
+const MiniDipChipIcon: React.FC<{ pinCount: number; selected?: boolean }> = ({
+  pinCount,
+  selected = false,
+}) => {
+  const pinsPerSide = Math.min(8, Math.floor(pinCount / 2));
+  const bodyColor = selected ? '#303840' : '#6D747B';
+  const pinColor = selected ? '#456A83' : '#8A9199';
+
+  return (
+    <svg
+      width={28}
+      height={34}
+      viewBox="0 0 28 34"
+      className="shrink-0"
+      aria-hidden="true"
+    >
+      {Array.from({ length: pinsPerSide }).map((_, idx) => {
+        const y = 4 + idx * (26 / Math.max(1, pinsPerSide - 1)) - 1.2;
+        return (
+          <g key={idx}>
+            <rect x={2} y={y} width={5} height={2.4} rx={0.6} fill={pinColor} />
+            <rect x={21} y={y} width={5} height={2.4} rx={0.6} fill={pinColor} />
+          </g>
+        );
+      })}
+      <rect x={6.5} y={2} width={15} height={30} rx={2} fill={bodyColor} />
+      <path d="M 11.5 2 A 2.5 2.5 0 0 0 16.5 2" fill="#EAE9E3" />
+    </svg>
+  );
+};
+
+const BASIC_GATE_PRIORITY: string[] = [
+  '7400',
+  '7402',
+  '7404',
+  '7408',
+  '7432',
+  '7486',
+  '4077',
+  '7410',
+  '7420',
+  '7427',
+];
+
+const IC_SEARCH_KEYWORDS: Record<string, string[]> = {
+  '7400': ['nand', 'quad 2-input nand', 'basic gate', 'universal gate', 'ttl', '74ls00'],
+  '7402': ['nor', 'quad 2-input nor', 'basic gate', 'universal gate', 'ttl', '74ls02'],
+  '7404': ['not', 'inverter', 'hex inverter', 'complement', 'basic gate', '74ls04'],
+  '7408': ['and', 'quad 2-input and', 'basic gate', 'product', '74ls08'],
+  '7410': ['nand', '3-input nand', 'triple 3-input nand', 'gate', '74ls10'],
+  '7420': ['nand', '4-input nand', 'dual 4-input nand', 'gate', '74ls20'],
+  '7427': ['nor', '3-input nor', 'triple 3-input nor', 'gate', '74ls27'],
+  '7432': ['or', 'quad 2-input or', 'basic gate', 'sum', '74ls32'],
+  '7486': ['xor', 'exor', 'ex-or', 'exclusive or', 'parity', 'half adder', 'basic gate', '74ls86'],
+  '4077': ['xnor', 'exnor', 'ex-nor', 'exclusive nor', 'equivalence', 'cmos', 'cd4077'],
+  '7483': ['adder', 'full adder', '4-bit binary full adder', 'carry', 'arithmetic', 'sum', '74ls83'],
+  '7485': ['comparator', 'magnitude comparator', '4-bit comparator', 'equal', 'greater', 'less', '74ls85'],
+  '74138': ['decoder', 'demux', 'demultiplexer', '3-to-8', '3 to 8 decoder', '74ls138'],
+  '74139': ['decoder', 'demux', 'dual 2-to-4', '2 to 4 decoder', '74ls139'],
+  '74148': ['encoder', 'priority encoder', '8-to-3', '8 to 3 encoder', 'octal', '74ls148'],
+  '74151': ['mux', 'multiplexer', 'data selector', '8-to-1', '8 to 1 mux', '74ls151'],
+  '74153': ['mux', 'multiplexer', 'dual 4-to-1', '4 to 1 mux', '74ls153'],
+  '7446': ['bcd', '7-segment', 'seven segment', 'decoder driver', 'display', '30v', '74ls46'],
+  '7447': ['bcd', '7-segment', 'seven segment', 'decoder driver', 'display', 'lts542', '74ls47'],
+  '7474': ['flip-flop', 'flip flop', 'd flip-flop', 'dual d', 'register', 'edge triggered', 'sequential', '74ls74'],
+  '7476': ['flip-flop', 'flip flop', 'jk flip-flop', 'j-k', 'master-slave', 'toggle', 'sequential', '74ls76'],
+  '7490': ['counter', 'decade counter', 'bcd counter', 'mod-10', 'mod 10', 'divide by 10', 'sequential', '74ls90'],
+  '7493': ['counter', 'binary counter', '4-bit counter', 'mod-16', 'mod 16', 'ripple counter', 'sequential', '74ls93'],
+  '7495': ['shift register', 'shift', 'parallel', 'serial', 'left shift', 'right shift', 'sequential', '74ls95'],
+  '74192': ['counter', 'up/down counter', 'synchronous counter', 'decade up down', 'presettable', '74ls192'],
+  '6116': ['ram', 'sram', 'memory', 'static ram', '2kx8', 'hm6116', 'read write', '24-pin'],
+};
+
+function scoreICForQuery(ic: ICDefinition, rawQuery: string, matchedCategories: Set<string>): number {
+  const q = rawQuery.trim().toLowerCase();
+  if (!q) return 0;
+
+  const part = ic.partNumber.toLowerCase();
+  const partLs = part.startsWith('74') ? `74ls${part.slice(2)}` : part;
+  const name = ic.name.toLowerCase();
+  const desc = ic.description.toLowerCase();
+  const keywords = IC_SEARCH_KEYWORDS[ic.partNumber] ?? [];
+
+  let score = 0;
+
+  if (part === q || partLs === q) score += 200;
+  else if (part.startsWith(q) || partLs.startsWith(q)) score += 140;
+  else if (part.includes(q) || partLs.includes(q)) score += 100;
+
+  if (name === q) score += 160;
+  else if (name.includes(q)) score += 110;
+
+  for (const kw of keywords) {
+    if (kw === q) score += 120;
+    else if (kw.startsWith(q)) score += 85;
+    else if (kw.includes(q)) score += 60;
+  }
+
+  // Multi-token search support
+  const tokens = q.split(/\s+/).filter(Boolean);
+  if (tokens.length > 1) {
+    const haystack = `${part} ${partLs} ${name} ${desc} ${keywords.join(' ')}`;
+    const allPresent = tokens.every((t) => haystack.includes(t));
+    if (allPresent) score += 90;
+  }
+
+  if (desc.includes(q)) score += 35;
+
+  // Boost related ICs in the same category as the primary search hits
+  if (score === 0 && matchedCategories.has(ic.category)) {
+    score += 20;
+  }
+
+  return score;
+}
 
 function formatTerminalDisplay(terminalId: string, placedICs: PlacedIC[]): string {
   if (terminalId.startsWith('PWR:+5V:')) {
@@ -88,6 +209,11 @@ export const TrainerWorkspace: React.FC = () => {
   const tickPulseLevel = useLabStore((s) => s.tickPulseLevel);
 
   const [quickICPart, setQuickICPart] = useState('7400');
+  const [icSearchOpen, setIcSearchOpen] = useState(false);
+  const [icSearchQuery, setIcSearchQuery] = useState('');
+  const icSearchContainerRef = useRef<HTMLDivElement>(null);
+  const icSearchInputRef = useRef<HTMLInputElement>(null);
+
   const [inspectorTab, setInspectorTab] = useState<'diagnostics' | 'ic' | 'wires' | 'clock'>(
     'diagnostics'
   );
@@ -95,9 +221,75 @@ export const TrainerWorkspace: React.FC = () => {
   const [showResetConfirmModal, setShowResetConfirmModal] = useState(false);
 
   const allICs = getAllICDefinitions();
+  const selectedQuickICDef = getICDefinition(quickICPart) ?? allICs[0];
   const { circuit } = project;
 
-  // Escape key cancels active patch cord routing, pending IC placement, or reset confirmation popup;
+  // Close IC search popover when clicking outside
+  useEffect(() => {
+    if (!icSearchOpen) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (
+        icSearchContainerRef.current &&
+        !icSearchContainerRef.current.contains(e.target as Node)
+      ) {
+        setIcSearchOpen(false);
+      }
+    };
+    window.addEventListener('mousedown', onPointerDown);
+    return () => window.removeEventListener('mousedown', onPointerDown);
+  }, [icSearchOpen]);
+
+  // Compute organized IC cards for the search picker:
+  // - When query is empty: show Default Basic Logic Gates on top + MSI/Sequential/Memory below
+  // - When searching: rank exact/keyword matches at the very top followed by related ICs in the same category
+  const searchResults = useMemo(() => {
+    const q = icSearchQuery.trim();
+    if (!q) {
+      const basicGates = BASIC_GATE_PRIORITY.map((p) => allICs.find((ic) => ic.partNumber === p)).filter(
+        (ic): ic is ICDefinition => Boolean(ic)
+      );
+      const advancedICs = allICs.filter((ic) => !BASIC_GATE_PRIORITY.includes(ic.partNumber));
+      return {
+        mode: 'default' as const,
+        basicGates,
+        advancedICs,
+        ranked: [] as Array<{ ic: ICDefinition; isRelated: boolean }>,
+      };
+    }
+
+    // First pass: direct matches
+    const directCategories = new Set<string>();
+    const directScores = new Map<string, number>();
+    for (const ic of allICs) {
+      const s = scoreICForQuery(ic, q, new Set());
+      if (s > 0) {
+        directScores.set(ic.partNumber, s);
+        directCategories.add(ic.category);
+      }
+    }
+
+    // Second pass: include related ICs from the matched categories below direct matches
+    const scoredList: Array<{ ic: ICDefinition; score: number; isRelated: boolean }> = [];
+    for (const ic of allICs) {
+      const direct = directScores.get(ic.partNumber) ?? 0;
+      if (direct > 0) {
+        scoredList.push({ ic, score: direct, isRelated: false });
+      } else if (directCategories.has(ic.category)) {
+        scoredList.push({ ic, score: 20, isRelated: true });
+      }
+    }
+
+    scoredList.sort((a, b) => b.score - a.score || a.ic.partNumber.localeCompare(b.ic.partNumber));
+
+    return {
+      mode: 'search' as const,
+      basicGates: [] as ICDefinition[],
+      advancedICs: [] as ICDefinition[],
+      ranked: scoredList.map((item) => ({ ic: item.ic, isRelated: item.isRelated })),
+    };
+  }, [allICs, icSearchQuery]);
+
+  // Escape key cancels active patch cord routing, pending IC placement, IC search popover, or reset confirmation popup;
   // Delete / Backspace deletes all selected wires
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -113,6 +305,7 @@ export const TrainerWorkspace: React.FC = () => {
         cancelWiring();
         setPendingInsertIC(null);
         setShowResetConfirmModal(false);
+        setIcSearchOpen(false);
         setSelectedWireIds([]);
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && !isEditable) {
         if (selectedWireIds.length > 0) {
@@ -233,37 +426,186 @@ export const TrainerWorkspace: React.FC = () => {
   const errorCount = simulation.diagnostics.filter((d) => d.severity === 'error').length;
   const warnCount = simulation.diagnostics.filter((d) => d.severity === 'warning').length;
 
+  const renderICPickerCard = (ic: ICDefinition, isRelated = false) => {
+    const isSelected = ic.partNumber === quickICPart;
+    return (
+      <button
+        key={ic.partNumber}
+        type="button"
+        data-testid={`ic-card-${ic.partNumber}`}
+        onClick={() => {
+          setQuickICPart(ic.partNumber);
+          setIcSearchOpen(false);
+        }}
+        className={`flex items-center gap-2.5 px-3 py-2 rounded-md border text-left transition-all cursor-pointer ${
+          isSelected
+            ? 'bg-[#E5EEF5] border-[#456A83] ring-1 ring-[#456A83] shadow-xs'
+            : isRelated
+            ? 'bg-[#F4F3EE]/80 border-[#D4D3CD] hover:border-[#8A9199] hover:bg-white'
+            : 'bg-[#F8F7F4] border-[#C9C9C3] hover:border-[#456A83] hover:bg-white'
+        }`}
+      >
+        <MiniDipChipIcon pinCount={ic.pinCount} selected={isSelected} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-1">
+            <span className="text-xs font-mono font-bold text-[#20252B] truncate">
+              {ic.partNumber}
+            </span>
+            <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-[#E5E5E1] text-[#555C62] shrink-0">
+              {ic.pinCount}P
+            </span>
+          </div>
+          <div className="text-[11px] text-[#555C62] truncate mt-0.5" title={ic.name}>
+            {ic.name}
+          </div>
+        </div>
+      </button>
+    );
+  };
+
   return (
     <main className="flex-1 flex flex-col overflow-hidden bg-[#F1F0EB] text-[#20252B]">
       {/* Instrument Bench Toolbar */}
       <div className="bg-[#E5E5E1] border-b border-[#C9C9C3] px-4 py-2 flex flex-wrap items-center justify-between gap-3 shrink-0">
-        {/* Project & IC Insertion Controls */}
+        {/* Project & IC Search + Insertion Controls */}
         <div className="flex flex-wrap items-center gap-2">
           <input
             type="text"
             aria-label="Current project name"
             value={project.name}
             onChange={(e) => renameProject(e.target.value)}
-            className="px-2.5 py-1 text-xs font-medium bg-[#F1F0EB] border border-[#B8B8B1] rounded text-[#20252B] w-40 focus:outline-none focus:border-[#456A83]"
+            className="px-2.5 py-1 text-xs font-medium bg-[#F1F0EB] border border-[#B8B8B1] rounded text-[#20252B] w-36 sm:w-40 focus:outline-none focus:border-[#456A83]"
           />
 
           <div className="h-5 w-px bg-[#C9C9C3]" />
 
-          <label htmlFor="quick-ic-select" className="text-xs font-medium text-[#303840]">
-            IC:
-          </label>
-          <select
-            id="quick-ic-select"
-            value={quickICPart}
-            onChange={(e) => setQuickICPart(e.target.value)}
-            className="px-2 py-1 text-xs font-mono bg-[#F1F0EB] border border-[#B8B8B1] rounded text-[#20252B] max-w-[calc(100vw-2rem)] sm:max-w-[260px] truncate focus:outline-none focus:border-[#456A83]"
-          >
-            {allICs.map((ic) => (
-              <option key={ic.partNumber} value={ic.partNumber}>
-                {ic.partNumber} — {ic.name} ({ic.pinCount}p)
-              </option>
-            ))}
-          </select>
+          <span className="text-xs font-medium text-[#303840]">IC:</span>
+
+          {/* Interactive IC Search Bar + Visual DIP Card Popover */}
+          <div ref={icSearchContainerRef} className="relative" data-testid="ic-search-container">
+            <div
+              onClick={() => {
+                setIcSearchOpen(true);
+                setTimeout(() => icSearchInputRef.current?.focus(), 10);
+              }}
+              className={`flex items-center gap-2 px-2.5 py-1 bg-[#F1F0EB] border rounded text-xs cursor-pointer transition-colors w-[250px] sm:w-[285px] ${
+                icSearchOpen
+                  ? 'border-[#456A83] ring-1 ring-[#456A83]'
+                  : 'border-[#B8B8B1] hover:border-[#456A83]'
+              }`}
+            >
+              <Search className="w-3.5 h-3.5 text-[#555C62] shrink-0" />
+              {icSearchOpen ? (
+                <input
+                  ref={icSearchInputRef}
+                  type="text"
+                  data-testid="ic-search-input"
+                  value={icSearchQuery}
+                  onChange={(e) => setIcSearchQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      const topMatch =
+                        searchResults.mode === 'search'
+                          ? searchResults.ranked[0]?.ic
+                          : searchResults.basicGates[0];
+                      if (topMatch) {
+                        setQuickICPart(topMatch.partNumber);
+                        setIcSearchOpen(false);
+                      }
+                    }
+                  }}
+                  placeholder="Search 7400, NAND, Adder, Counter, RAM..."
+                  className="w-full bg-transparent text-xs font-mono text-[#20252B] focus:outline-none"
+                />
+              ) : (
+                <button
+                  type="button"
+                  data-testid="ic-search-trigger"
+                  className="flex items-center justify-between gap-2 w-full text-left font-mono text-xs text-[#20252B] truncate cursor-pointer"
+                >
+                  <span className="truncate">
+                    <strong>{selectedQuickICDef.partNumber}</strong> — {selectedQuickICDef.name} (
+                    {selectedQuickICDef.pinCount}p)
+                  </span>
+                  <ChevronDown className="w-3.5 h-3.5 text-[#555C62] shrink-0" />
+                </button>
+              )}
+              {icSearchOpen && icSearchQuery && (
+                <button
+                  type="button"
+                  aria-label="Clear IC search query"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIcSearchQuery('');
+                    icSearchInputRef.current?.focus();
+                  }}
+                  className="p-0.5 text-[#747C82] hover:text-[#20252B] cursor-pointer"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+
+            {icSearchOpen && (
+              <div
+                data-testid="ic-search-popover"
+                className="absolute left-0 top-full mt-1.5 z-50 w-[92vw] max-w-[760px] max-h-[440px] overflow-y-auto bg-[#EAE9E3] border border-[#303840] rounded-md shadow-xl p-3.5 space-y-3"
+              >
+                {searchResults.mode === 'default' ? (
+                  <>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between border-b border-[#C9C9C3] pb-1">
+                        <span className="text-[11px] font-mono font-bold uppercase tracking-wider text-[#303840]">
+                          Essential Basic Logic Gates (Default)
+                        </span>
+                        <span className="text-[10px] font-mono text-[#555C62]">
+                          Click any IC card to select, then click + ZIF socket
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+                        {searchResults.basicGates.map((ic) => renderICPickerCard(ic, false))}
+                      </div>
+                    </div>
+
+                    <div className="space-y-2 pt-1">
+                      <div className="flex items-center justify-between border-b border-[#C9C9C3] pb-1">
+                        <span className="text-[11px] font-mono font-bold uppercase tracking-wider text-[#303840]">
+                          Combinational, Sequential &amp; Static RAM ICs
+                        </span>
+                        <span className="text-[10px] font-mono text-[#555C62]">
+                          Adders · Decoders · MUX · Flip-Flops · Counters · 6116 RAM
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+                        {searchResults.advancedICs.map((ic) => renderICPickerCard(ic, false))}
+                      </div>
+                    </div>
+                  </>
+                ) : searchResults.ranked.length === 0 ? (
+                  <div className="py-6 text-center text-xs font-mono text-[#555C62]">
+                    No matching IC found for &ldquo;{icSearchQuery}&rdquo;. Try searching 7400, NAND,
+                    Adder, Counter, Decoder, MUX, or 6116.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between border-b border-[#C9C9C3] pb-1">
+                      <span className="text-[11px] font-mono font-bold uppercase tracking-wider text-[#303840]">
+                        Top Search Matches &amp; Related ICs ({searchResults.ranked.length})
+                      </span>
+                      <span className="text-[10px] font-mono text-[#555C62]">
+                        Press Enter to select top match
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+                      {searchResults.ranked.map(({ ic, isRelated }) =>
+                        renderICPickerCard(ic, isRelated)
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
 
           {(['ZIF1', 'ZIF2', 'ZIF3', 'ZIF4'] as const).map((sockId, idx) => (
             <button
@@ -360,12 +702,8 @@ export const TrainerWorkspace: React.FC = () => {
         </div>
       </div>
 
-      {/* Contextual Status Banners */}
-      {(wiringFrom ||
-        pendingInsertIC ||
-        placementError ||
-        selectedWireIds.length > 0 ||
-        selectedWireId) && (
+      {/* Contextual Status Banners (No wire selection popup so canvas never shifts during marquee drag) */}
+      {(wiringFrom || pendingInsertIC || placementError) && (
         <div className="bg-[#303840] text-[#F1F0EB] px-4 py-1.5 text-xs flex items-center justify-between gap-4 border-b border-[#20252B] shrink-0">
           <div className="flex items-center gap-3 font-mono">
             {wiringFrom && (
@@ -382,58 +720,20 @@ export const TrainerWorkspace: React.FC = () => {
               </span>
             )}
             {placementError && <span className="text-[#E8A45C]">{placementError}</span>}
-            {(selectedWireIds.length > 0 || selectedWireId) && !wiringFrom && !placementError && (
-              <span>
-                {selectedWireIds.length > 1
-                  ? `${selectedWireIds.length} patch cords selected (marquee drag or Shift+Click) — press Delete/Backspace or click Delete Selected.`
-                  : 'Patch cord selected — drag from any point on the wire to curve around labels, Shift+Click or drag box to multi-select, or press Delete.'}
-              </span>
-            )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {(selectedWireIds.length > 0 || selectedWireId) && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setSelectedWireIds([])}
-                  className="px-2 py-0.5 text-xs bg-[#414B56] text-[#F1F0EB] rounded hover:bg-[#525E6B] cursor-pointer"
-                >
-                  Clear Selection
-                </button>
-                <button
-                  type="button"
-                  data-testid="banner-delete-selected-wires"
-                  onClick={() =>
-                    removeWires(
-                      selectedWireIds.length > 0
-                        ? selectedWireIds
-                        : selectedWireId
-                        ? [selectedWireId]
-                        : []
-                    )
-                  }
-                  className="px-2.5 py-0.5 text-xs font-semibold bg-[#B83A32] text-white rounded hover:bg-[#9E2F28] cursor-pointer"
-                >
-                  {selectedWireIds.length > 1
-                    ? `Delete ${selectedWireIds.length} Wires`
-                    : 'Delete Wire'}
-                </button>
-              </>
-            )}
-            {(wiringFrom || pendingInsertIC || placementError) && (
-              <button
-                type="button"
-                onClick={() => {
-                  cancelWiring();
-                  setPendingInsertIC(null);
-                  clearPlacementError();
-                }}
-                className="p-0.5 text-[#A5ACB2] hover:text-white cursor-pointer"
-                aria-label="Dismiss active tool message"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => {
+                cancelWiring();
+                setPendingInsertIC(null);
+                clearPlacementError();
+              }}
+              className="p-0.5 text-[#A5ACB2] hover:text-white cursor-pointer"
+              aria-label="Dismiss active tool message"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
       )}
