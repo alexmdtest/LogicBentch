@@ -39,6 +39,7 @@ interface LabState {
   selectedWireColor: WireColor;
   wiringFrom: TerminalId | null;
   selectedWireId: string | null;
+  selectedWireIds: string[];
   pendingInsertIC: string | null; // Part number chosen from IC library ready to insert
   selectedICInstanceId: string | null;
   placementError: string | null;
@@ -52,6 +53,8 @@ interface LabState {
   setPendingInsertIC: (partNumber: string | null) => void;
   setSelectedICInstanceId: (id: string | null) => void;
   setSelectedWireId: (id: string | null) => void;
+  setSelectedWireIds: (ids: string[]) => void;
+  toggleSelectedWireId: (id: string) => void;
   clearPlacementError: () => void;
 
   // Circuit & Hardware Actions
@@ -75,12 +78,14 @@ interface LabState {
 
   // IC Placement
   insertIC: (partNumber: string, target: ICPlacementTarget) => { ok: boolean; error?: string };
+  moveICToSocket: (instanceId: string, targetSocketId: ZIFSocketId) => { ok: boolean; error?: string };
   removeIC: (instanceId: string) => void;
 
   // Patch cords & jumpers
   startOrCompleteWiring: (terminalId: TerminalId) => void;
   cancelWiring: () => void;
   removeWire: (wireId: string) => void;
+  removeWires: (wireIds: string[]) => void;
   updateWireOffset: (wireId: string, dx: number, dy: number) => void;
 
   // History & Project Management
@@ -121,31 +126,23 @@ const initialProject = createNewProject('Lab Bench 01', 'DT-1004 Digital Trainer
 
 const emptySimulation: SimulationSnapshot = {
   simTimeNs: 0,
-  powerOn: false,
+  powerOn: true,
   terminalStates: {},
   ledStates: Array(16).fill('Z'),
   displays: {
     DISP1: {
-      caLevel: 'Z',
+      caLevel: 1,
       segments: { a: false, b: false, c: false, d: false, e: false, f: false, g: false, dp: false },
-      pinLevels: { a: 'Z', b: 'Z', c: 'Z', d: 'Z', e: 'Z', f: 'Z', g: 'Z', dp: 'Z', CA: 'Z' },
+      pinLevels: { a: 'Z', b: 'Z', c: 'Z', d: 'Z', e: 'Z', f: 'Z', g: 'Z', dp: 'Z', CA: 1 },
     },
     DISP2: {
-      caLevel: 'Z',
+      caLevel: 1,
       segments: { a: false, b: false, c: false, d: false, e: false, f: false, g: false, dp: false },
-      pinLevels: { a: 'Z', b: 'Z', c: 'Z', d: 'Z', e: 'Z', f: 'Z', g: 'Z', dp: 'Z', CA: 'Z' },
+      pinLevels: { a: 'Z', b: 'Z', c: 'Z', d: 'Z', e: 'Z', f: 'Z', g: 'Z', dp: 'Z', CA: 1 },
     },
   },
   icStates: {},
-  diagnostics: [
-    {
-      id: 'power-off',
-      severity: 'info',
-      code: 'POWER_OFF',
-      title: 'Main Trainer Power OFF',
-      detail: 'Switch on the main trainer POWER toggle to energize +5V supply rails, switches, clocks, and ICs.',
-    },
-  ],
+  diagnostics: [],
   netCount: 0,
 };
 
@@ -201,6 +198,7 @@ export const useLabStore = create<LabState>((set, get) => {
     selectedWireColor: 'yellow',
     wiringFrom: null,
     selectedWireId: null,
+    selectedWireIds: [],
     pendingInsertIC: null,
     selectedICInstanceId: null,
     placementError: null,
@@ -212,7 +210,19 @@ export const useLabStore = create<LabState>((set, get) => {
     setSelectedWireColor: (color) => set({ selectedWireColor: color }),
     setPendingInsertIC: (partNumber) => set({ pendingInsertIC: partNumber, placementError: null }),
     setSelectedICInstanceId: (id) => set({ selectedICInstanceId: id }),
-    setSelectedWireId: (id) => set({ selectedWireId: id }),
+    setSelectedWireId: (id) => set({ selectedWireId: id, selectedWireIds: id ? [id] : [] }),
+    setSelectedWireIds: (ids) => {
+      const unique = Array.from(new Set(ids));
+      set({ selectedWireIds: unique, selectedWireId: unique[0] ?? null });
+    },
+    toggleSelectedWireId: (id) => {
+      const st = get();
+      const exists = st.selectedWireIds.includes(id);
+      const next = exists
+        ? st.selectedWireIds.filter((wId) => wId !== id)
+        : [...st.selectedWireIds, id];
+      set({ selectedWireIds: next, selectedWireId: next[0] ?? null });
+    },
     clearPlacementError: () => set({ placementError: null }),
 
     togglePower: () => {
@@ -391,6 +401,37 @@ export const useLabStore = create<LabState>((set, get) => {
       return { ok: true };
     },
 
+    moveICToSocket: (instanceId, targetSocketId) => {
+      const st = get();
+      const ic = st.project.circuit.placedICs.find((p) => p.instanceId === instanceId);
+      if (!ic) return { ok: false, error: 'IC not found.' };
+      if (ic.placement.kind === 'zif' && ic.placement.socketId === targetSocketId) {
+        return { ok: true };
+      }
+      const compat = canInsertIntoZif(ic.partNumber, targetSocketId);
+      if (!compat.ok) {
+        set({ placementError: compat.reason ?? 'Incompatible socket.' });
+        return { ok: false, error: compat.reason };
+      }
+      const occupied = st.project.circuit.placedICs.find(
+        (p) => p.instanceId !== instanceId && p.placement.kind === 'zif' && p.placement.socketId === targetSocketId
+      );
+      if (occupied) {
+        const error = `${targetSocketId} already holds ${occupied.partNumber}.`;
+        set({ placementError: error });
+        return { ok: false, error };
+      }
+      commitCircuitChange((c) => {
+        const target = c.placedICs.find((p) => p.instanceId === instanceId);
+        if (target) {
+          target.placement = { kind: 'zif', socketId: targetSocketId };
+        }
+        return c;
+      });
+      set({ selectedICInstanceId: instanceId, placementError: null });
+      return { ok: true };
+    },
+
     removeIC: (instanceId) => {
       commitCircuitChange((c) => {
         c.placedICs = c.placedICs.filter((ic) => ic.instanceId !== instanceId);
@@ -404,7 +445,7 @@ export const useLabStore = create<LabState>((set, get) => {
     startOrCompleteWiring: (terminalId) => {
       const st = get();
       if (!st.wiringFrom) {
-        set({ wiringFrom: terminalId, selectedWireId: null, placementError: null });
+        set({ wiringFrom: terminalId, selectedWireId: null, selectedWireIds: [], placementError: null });
         return;
       }
       if (st.wiringFrom === terminalId) {
@@ -419,7 +460,7 @@ export const useLabStore = create<LabState>((set, get) => {
         (w) => (w.from === from && w.to === to) || (w.from === to && w.to === from)
       );
       if (duplicate) {
-        set({ wiringFrom: null, selectedWireId: duplicate.id });
+        set({ wiringFrom: null, selectedWireId: duplicate.id, selectedWireIds: [duplicate.id] });
         return;
       }
 
@@ -438,7 +479,7 @@ export const useLabStore = create<LabState>((set, get) => {
         c.wires.push(newWire);
         return c;
       });
-      set({ wiringFrom: null, selectedWireId: newWire.id });
+      set({ wiringFrom: null, selectedWireId: newWire.id, selectedWireIds: [newWire.id] });
     },
 
     cancelWiring: () => set({ wiringFrom: null }),
@@ -448,9 +489,27 @@ export const useLabStore = create<LabState>((set, get) => {
         c.wires = c.wires.filter((w) => w.id !== wireId);
         return c;
       });
-      if (get().selectedWireId === wireId) {
-        set({ selectedWireId: null });
-      }
+      const st = get();
+      const nextIds = st.selectedWireIds.filter((id) => id !== wireId);
+      set({
+        selectedWireIds: nextIds,
+        selectedWireId: nextIds[0] ?? null,
+      });
+    },
+
+    removeWires: (wireIds) => {
+      if (wireIds.length === 0) return;
+      const idSet = new Set(wireIds);
+      commitCircuitChange((c) => {
+        c.wires = c.wires.filter((w) => !idSet.has(w.id));
+        return c;
+      });
+      const st = get();
+      const nextIds = st.selectedWireIds.filter((id) => !idSet.has(id));
+      set({
+        selectedWireIds: nextIds,
+        selectedWireId: nextIds[0] ?? null,
+      });
     },
 
     updateWireOffset: (wireId, dx, dy) => {
@@ -478,6 +537,8 @@ export const useLabStore = create<LabState>((set, get) => {
         undoStack: nextUndo,
         redoStack: nextRedo,
         wiringFrom: null,
+        selectedWireId: null,
+        selectedWireIds: [],
       });
       void runSimulationStep(get, set);
       scheduleAutoSave(get);
@@ -498,6 +559,8 @@ export const useLabStore = create<LabState>((set, get) => {
         undoStack: nextUndo,
         redoStack: nextRedo,
         wiringFrom: null,
+        selectedWireId: null,
+        selectedWireIds: [],
       });
       void runSimulationStep(get, set);
       scheduleAutoSave(get);
@@ -509,6 +572,7 @@ export const useLabStore = create<LabState>((set, get) => {
       set({
         wiringFrom: null,
         selectedWireId: null,
+        selectedWireIds: [],
         selectedICInstanceId: null,
         pendingInsertIC: null,
         placementError: null,
@@ -524,6 +588,7 @@ export const useLabStore = create<LabState>((set, get) => {
         redoStack: [],
         wiringFrom: null,
         selectedWireId: null,
+        selectedWireIds: [],
         selectedICInstanceId: null,
         pendingInsertIC: null,
         placementError: null,

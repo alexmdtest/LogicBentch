@@ -107,7 +107,7 @@ export const DashboardView: React.FC = () => {
             </div>
             <div className="bg-[#20252B] border border-[#47505A] rounded p-3.5">
               <div className="text-xs text-[#A5ACB2]">Display Hardware</div>
-              <div className="text-2xl font-mono font-semibold tabular-nums mt-1">2 × CA</div>
+              <div className="text-2xl font-mono font-semibold tabular-nums mt-1">1 × CA</div>
               <div className="text-xs text-[#747C82] mt-0.5">Onboard LTS542</div>
             </div>
             <div className="bg-[#20252B] border border-[#47505A] rounded p-3.5">

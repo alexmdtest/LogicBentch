@@ -1,6 +1,10 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { canInsertIntoZif, getICDefinition } from '../ic-library';
-import { getDisplayedZifPinInfo, getICPinTerminalId } from '../simulation/netlist';
+import {
+  formatDirectionTag,
+  getDisplayedZifPinInfo,
+  getICPinTerminalId,
+} from '../simulation/netlist';
 import { useLabStore } from '../store/useLabStore';
 import {
   ALL_TERMINAL_LIST,
@@ -8,6 +12,7 @@ import {
   BOARD_HEIGHT,
   BOARD_WIDTH,
   computeWirePath,
+  DUSTBIN_LAYOUT,
   getTerminalGeometry,
   getZifLayout,
   WIRE_COLOR_HEX,
@@ -75,6 +80,46 @@ const SevenSegDigitSVG: React.FC<SevenSegSVGProps> = ({ x, y, label, segments, p
   );
 };
 
+interface DragICState {
+  instanceId: string;
+  partNumber: string;
+  silkscreen: string;
+  pinCount: number;
+  originSocketId: ZIFSocketId;
+  originX: number;
+  originY: number;
+  currentX: number;
+  currentY: number;
+  chipW: number;
+  chipH: number;
+  phase: 'dragging' | 'returning' | 'deleting-drop' | 'deleting-close';
+}
+
+function isPointOverDustbin(x: number, y: number): boolean {
+  const inBox =
+    x >= DUSTBIN_LAYOUT.x - 18 &&
+    x <= DUSTBIN_LAYOUT.x + DUSTBIN_LAYOUT.width + 18 &&
+    y >= DUSTBIN_LAYOUT.y - 14 &&
+    y <= DUSTBIN_LAYOUT.y + DUSTBIN_LAYOUT.height + 18;
+  const dist = Math.hypot(x - DUSTBIN_LAYOUT.centerX, y - DUSTBIN_LAYOUT.centerY);
+  return inBox || dist <= 82;
+}
+
+function findSocketAtPoint(x: number, y: number): ZIFSocketId | null {
+  for (const sockId of ALL_ZIF_SOCKETS) {
+    const layout = getZifLayout(sockId);
+    if (
+      x >= layout.baseX &&
+      x <= layout.baseX + layout.width &&
+      y >= layout.topY &&
+      y <= layout.topY + layout.height
+    ) {
+      return sockId;
+    }
+  }
+  return null;
+}
+
 export const TrainerBoardSVG: React.FC = () => {
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -82,6 +127,7 @@ export const TrainerBoardSVG: React.FC = () => {
   const simulation = useLabStore((s) => s.simulation);
   const wiringFrom = useLabStore((s) => s.wiringFrom);
   const selectedWireId = useLabStore((s) => s.selectedWireId);
+  const selectedWireIds = useLabStore((s) => s.selectedWireIds);
   const selectedWireColor = useLabStore((s) => s.selectedWireColor);
   const pendingInsertIC = useLabStore((s) => s.pendingInsertIC);
   const selectedICInstanceId = useLabStore((s) => s.selectedICInstanceId);
@@ -94,15 +140,22 @@ export const TrainerBoardSVG: React.FC = () => {
   const toggleAutoClock = useLabStore((s) => s.toggleAutoClock);
   const togglePulseGenerator = useLabStore((s) => s.togglePulseGenerator);
   const insertIC = useLabStore((s) => s.insertIC);
+  const moveICToSocket = useLabStore((s) => s.moveICToSocket);
+  const removeIC = useLabStore((s) => s.removeIC);
   const setSelectedICInstanceId = useLabStore((s) => s.setSelectedICInstanceId);
   const startOrCompleteWiring = useLabStore((s) => s.startOrCompleteWiring);
   const cancelWiring = useLabStore((s) => s.cancelWiring);
   const setSelectedWireId = useLabStore((s) => s.setSelectedWireId);
+  const setSelectedWireIds = useLabStore((s) => s.setSelectedWireIds);
+  const toggleSelectedWireId = useLabStore((s) => s.toggleSelectedWireId);
   const removeWire = useLabStore((s) => s.removeWire);
+  const removeWires = useLabStore((s) => s.removeWires);
   const updateWireOffset = useLabStore((s) => s.updateWireOffset);
 
   const [pointerSvg, setPointerSvg] = useState<{ x: number; y: number } | null>(null);
   const [hoverTerminal, setHoverTerminal] = useState<TerminalId | null>(null);
+  const [hoverWireId, setHoverWireId] = useState<string | null>(null);
+  const [hoverDustbin, setHoverDustbin] = useState(false);
   const [draggingWireMid, setDraggingWireMid] = useState<{
     wireId: string;
     startX: number;
@@ -111,7 +164,22 @@ export const TrainerBoardSVG: React.FC = () => {
     origDy: number;
   } | null>(null);
 
+  const [marqueeBox, setMarqueeBox] = useState<{
+    startX: number;
+    startY: number;
+    currX: number;
+    currY: number;
+  } | null>(null);
+  const marqueeStartRef = useRef<{ startX: number; startY: number } | null>(null);
+  const lastMarqueeHitsRef = useRef<string[]>([]);
+
+  const [dragIC, setDragIC] = useState<DragICState | null>(null);
+
   const { circuit } = project;
+  const wiresRef = useRef(circuit.wires);
+  wiresRef.current = circuit.wires;
+  const isMarqueeDragging = marqueeBox !== null;
+
   const occupiedSockets = new Set<TerminalId>();
   for (const w of circuit.wires) {
     occupiedSockets.add(w.from);
@@ -129,16 +197,246 @@ export const TrainerBoardSVG: React.FC = () => {
     };
   };
 
+  // Trigger smooth multi-stage deletion animation into the Dustbin
+  const triggerAnimatedBinDelete = (icState: DragICState) => {
+    // Stage 1: Bin opens cap at an angle & zooms in; IC flies into bin mouth & zooms out small
+    setDragIC({
+      ...icState,
+      currentX: DUSTBIN_LAYOUT.centerX - 2,
+      currentY: DUSTBIN_LAYOUT.centerY - 4,
+      phase: 'deleting-drop',
+    });
+
+    setTimeout(() => {
+      // Stage 2: IC is inside bin; cap closes back down & bin zooms back to normal
+      setDragIC((prev) =>
+        prev && prev.instanceId === icState.instanceId
+          ? {
+              ...prev,
+              currentX: DUSTBIN_LAYOUT.centerX,
+              currentY: DUSTBIN_LAYOUT.centerY + 12,
+              phase: 'deleting-close',
+            }
+          : prev
+      );
+    }, 340);
+
+    setTimeout(() => {
+      // Stage 3: Complete deletion in store (pushes undo state automatically)
+      removeIC(icState.instanceId);
+      setDragIC((prev) => (prev && prev.instanceId === icState.instanceId ? null : prev));
+    }, 620);
+  };
+
+  // Window-level mouse move / mouse up listeners while actively dragging an IC
+  useEffect(() => {
+    if (!dragIC || dragIC.phase !== 'dragging') return;
+
+    const onWindowMouseMove = (e: MouseEvent) => {
+      const pt = toSvgCoords(e.clientX, e.clientY);
+      if (!pt) return;
+      setDragIC((prev) =>
+        prev && prev.phase === 'dragging'
+          ? { ...prev, currentX: pt.x, currentY: pt.y }
+          : prev
+      );
+    };
+
+    const onWindowMouseUp = (e: MouseEvent) => {
+      const pt = toSvgCoords(e.clientX, e.clientY);
+      const dropX = pt ? pt.x : dragIC.currentX;
+      const dropY = pt ? pt.y : dragIC.currentY;
+
+      // 1. Check if dropped into the Dustbin
+      if (isPointOverDustbin(dropX, dropY)) {
+        triggerAnimatedBinDelete(dragIC);
+        return;
+      }
+
+      // 2. Check if dropped onto another empty compatible ZIF socket
+      const targetSocket = findSocketAtPoint(dropX, dropY);
+      if (targetSocket && targetSocket !== dragIC.originSocketId) {
+        const compat = canInsertIntoZif(dragIC.partNumber, targetSocket);
+        const alreadyOccupied = circuit.placedICs.some(
+          (p) =>
+            p.instanceId !== dragIC.instanceId &&
+            p.placement.kind === 'zif' &&
+            p.placement.socketId === targetSocket
+        );
+        if (compat.ok && !alreadyOccupied) {
+          moveICToSocket(dragIC.instanceId, targetSocket);
+          setDragIC(null);
+          return;
+        }
+      }
+
+      // 3. If not dropped in Dustbin or valid empty socket (or if barely clicked/failed drop):
+      // Smoothly animate back to its original socket
+      const movedDist = Math.hypot(dropX - dragIC.originX, dropY - dragIC.originY);
+      if (movedDist < 6) {
+        setDragIC(null);
+        return;
+      }
+
+      setDragIC((prev) =>
+        prev
+          ? {
+              ...prev,
+              currentX: prev.originX,
+              currentY: prev.originY,
+              phase: 'returning',
+            }
+          : null
+      );
+      setTimeout(() => {
+        setDragIC((prev) => (prev && prev.phase === 'returning' ? null : prev));
+      }, 280);
+    };
+
+    window.addEventListener('mousemove', onWindowMouseMove);
+    window.addEventListener('mouseup', onWindowMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onWindowMouseMove);
+      window.removeEventListener('mouseup', onWindowMouseUp);
+    };
+  }, [dragIC, circuit.placedICs, moveICToSocket, removeIC]);
+
+  // Window-level mouse move / mouse up listeners while dragging a patch cord from any point
+  useEffect(() => {
+    if (!draggingWireMid) return;
+
+    const onWindowWireMove = (e: MouseEvent) => {
+      const pt = toSvgCoords(e.clientX, e.clientY);
+      if (!pt) return;
+      const dx = draggingWireMid.origDx + (pt.x - draggingWireMid.startX);
+      const dy = draggingWireMid.origDy + (pt.y - draggingWireMid.startY);
+      updateWireOffset(draggingWireMid.wireId, Math.round(dx), Math.round(dy));
+    };
+
+    const onWindowWireUp = () => {
+      setDraggingWireMid(null);
+    };
+
+    window.addEventListener('mousemove', onWindowWireMove);
+    window.addEventListener('mouseup', onWindowWireUp);
+    return () => {
+      window.removeEventListener('mousemove', onWindowWireMove);
+      window.removeEventListener('mouseup', onWindowWireUp);
+    };
+  }, [draggingWireMid, updateWireOffset]);
+
+  // Window-level mouse move / mouse up listeners while dragging the multi-wire Marquee Selection Box
+  // Bound once per drag gesture (depends only on isMarqueeDragging) for zero stutter
+  useEffect(() => {
+    if (!isMarqueeDragging) return;
+
+    const getWiresInRect = (x1: number, y1: number, x2: number, y2: number): string[] => {
+      const minX = Math.min(x1, x2);
+      const maxX = Math.max(x1, x2);
+      const minY = Math.min(y1, y2);
+      const maxY = Math.max(y1, y2);
+      if (maxX - minX < 4 && maxY - minY < 4) return [];
+
+      const matched: string[] = [];
+      wiresRef.current.forEach((wire, idx) => {
+        const fromG = getTerminalGeometry(wire.from);
+        const toG = getTerminalGeometry(wire.to);
+        if (!fromG || !toG) return;
+        const { midX, midY } = computeWirePath(
+          fromG,
+          toG,
+          wire.kind,
+          idx,
+          wire.controlOffset
+        );
+        const ctrlX = 2 * midX - 0.5 * (fromG.x + toG.x);
+        const ctrlY = 2 * midY - 0.5 * (fromG.y + toG.y);
+
+        for (let s = 0; s <= 24; s++) {
+          const t = s / 24;
+          const u = 1 - t;
+          const px = u * u * fromG.x + 2 * u * t * ctrlX + t * t * toG.x;
+          const py = u * u * fromG.y + 2 * u * t * ctrlY + t * t * toG.y;
+          if (px >= minX && px <= maxX && py >= minY && py <= maxY) {
+            matched.push(wire.id);
+            break;
+          }
+        }
+      });
+      return matched;
+    };
+
+    const applyHitsIfChanged = (hits: string[]) => {
+      const prev = lastMarqueeHitsRef.current;
+      if (hits.length === prev.length && hits.every((id, i) => id === prev[i])) {
+        return;
+      }
+      lastMarqueeHitsRef.current = hits;
+      setSelectedWireIds(hits);
+    };
+
+    const onWindowMarqueeMove = (e: MouseEvent) => {
+      const start = marqueeStartRef.current;
+      if (!start) return;
+      const pt = toSvgCoords(e.clientX, e.clientY);
+      if (!pt) return;
+      setMarqueeBox({
+        startX: start.startX,
+        startY: start.startY,
+        currX: pt.x,
+        currY: pt.y,
+      });
+      const hits = getWiresInRect(start.startX, start.startY, pt.x, pt.y);
+      applyHitsIfChanged(hits);
+    };
+
+    const onWindowMarqueeUp = (e: MouseEvent) => {
+      const start = marqueeStartRef.current;
+      const pt = toSvgCoords(e.clientX, e.clientY);
+      if (start && pt) {
+        const dist = Math.hypot(pt.x - start.startX, pt.y - start.startY);
+        if (dist < 5) {
+          lastMarqueeHitsRef.current = [];
+          setSelectedWireIds([]);
+        } else {
+          const hits = getWiresInRect(start.startX, start.startY, pt.x, pt.y);
+          lastMarqueeHitsRef.current = hits;
+          setSelectedWireIds(hits);
+        }
+      }
+      marqueeStartRef.current = null;
+      setMarqueeBox(null);
+    };
+
+    window.addEventListener('mousemove', onWindowMarqueeMove);
+    window.addEventListener('mouseup', onWindowMarqueeUp);
+    return () => {
+      window.removeEventListener('mousemove', onWindowMarqueeMove);
+      window.removeEventListener('mouseup', onWindowMarqueeUp);
+    };
+  }, [isMarqueeDragging, setSelectedWireIds]);
+
+  const handleSvgMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (e.button !== 0 || wiringFrom || dragIC || draggingWireMid) return;
+    const pt = toSvgCoords(e.clientX, e.clientY);
+    if (!pt) return;
+    setHoverTerminal(null);
+    setHoverWireId(null);
+    marqueeStartRef.current = { startX: pt.x, startY: pt.y };
+    lastMarqueeHitsRef.current = [];
+    setMarqueeBox({
+      startX: pt.x,
+      startY: pt.y,
+      currX: pt.x,
+      currY: pt.y,
+    });
+  };
+
   const handleSvgMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
     const pt = toSvgCoords(e.clientX, e.clientY);
     if (!pt) return;
     if (wiringFrom) {
       setPointerSvg(pt);
-    }
-    if (draggingWireMid) {
-      const dx = draggingWireMid.origDx + (pt.x - draggingWireMid.startX);
-      const dy = draggingWireMid.origDy + (pt.y - draggingWireMid.startY);
-      updateWireOffset(draggingWireMid.wireId, Math.round(dx), Math.round(dy));
     }
   };
 
@@ -163,17 +461,33 @@ export const TrainerBoardSVG: React.FC = () => {
       (p) => p.placement.kind === 'zif' && p.placement.socketId === socketId
     );
     const occupantDef = occupant ? getICDefinition(occupant.partNumber) : undefined;
+    const isBeingDragged = Boolean(occupant && dragIC && dragIC.instanceId === occupant.instanceId);
     const is14PinShifted = Boolean(occupantDef && occupantDef.pinCount === 14 && !is24);
+
+    // Highlight socket when dragging an IC over a compatible empty socket or when pendingInsertIC is set
+    const draggedHoverSocket =
+      dragIC && dragIC.phase === 'dragging'
+        ? findSocketAtPoint(dragIC.currentX, dragIC.currentY) === socketId
+        : false;
+    const dragCompat =
+      draggedHoverSocket && dragIC ? canInsertIntoZif(dragIC.partNumber, socketId) : null;
+
     const pendingCompat = pendingInsertIC ? canInsertIntoZif(pendingInsertIC, socketId) : null;
-    const canInsertHere = Boolean(pendingInsertIC && !occupant && pendingCompat?.ok);
-    const isIncompatible = Boolean(pendingInsertIC && !occupant && pendingCompat && !pendingCompat.ok);
+    const canInsertHere = Boolean(
+      (pendingInsertIC && !occupant && pendingCompat?.ok) ||
+        (draggedHoverSocket && !occupant && dragCompat?.ok)
+    );
+    const isIncompatible = Boolean(
+      (pendingInsertIC && !occupant && pendingCompat && !pendingCompat.ok) ||
+        (draggedHoverSocket && (occupant || (dragCompat && !dragCompat.ok)))
+    );
 
     const titleText = is24
       ? 'ZIF-5 (24-PIN RAM)'
       : `ZIF-${layout.index + 1} (${is14PinShifted ? '14-PIN MODE' : '16-PIN'})`;
 
     return (
-      <g key={socketId}>
+      <g key={socketId} data-socket-id={socketId}>
         {/* Module Instrument Bezel */}
         <rect
           x={layout.baseX}
@@ -215,7 +529,7 @@ export const TrainerBoardSVG: React.FC = () => {
           {occupant ? `${occupant.partNumber} (${occupantDef?.pinCount}P)` : 'EMPTY'}
         </text>
 
-        {/* Built-in Top +5V Label (below top-center red socket, matching reference image) */}
+        {/* Built-in Top +5V Label */}
         <text
           x={layout.vccX}
           y={layout.vccY + 20}
@@ -231,20 +545,7 @@ export const TrainerBoardSVG: React.FC = () => {
           +5V
         </text>
 
-        {/* ZIF Locking Lever Handle */}
-        <rect
-          x={layout.bodyX - 10}
-          y={layout.cradleTopY - 12}
-          width={12}
-          height={22}
-          rx={2}
-          fill="#8D949B"
-          stroke="#181C20"
-          strokeWidth={0.8}
-        />
-        <circle cx={layout.bodyX - 4} cy={layout.cradleTopY - 8} r={4.5} fill="#D6D5CE" />
-
-        {/* ZIF Socket Cradle */}
+        {/* Clean DIP Socket Cradle (ZIF Locking Lever completely removed) */}
         <rect
           x={layout.bodyX}
           y={layout.cradleTopY}
@@ -268,7 +569,7 @@ export const TrainerBoardSVG: React.FC = () => {
           fill="#232A31"
         />
 
-        {/* Socket Rows: High-Resolution Pin Numbers, Traces & Contact Slots */}
+        {/* Socket Rows: High-Resolution Pin Numbers, Traces & IC Pin Names */}
         {Array.from({ length: layout.rows }).map((_, rowIdx) => {
           const y = layout.pinStartY + rowIdx * layout.pinStepY;
           const leftSocketPin = rowIdx + 1;
@@ -279,8 +580,8 @@ export const TrainerBoardSVG: React.FC = () => {
 
           const leftIsNC = leftInfo.displayedPin === 'NC';
           const rightIsNC = rightInfo.displayedPin === 'NC';
-          const numFontSize = is24 ? 10.5 : 11.5;
-          const nameFontSize = is24 ? 9.5 : 10.5;
+          const numFontSize = is24 ? 10 : 11;
+          const nameFontSize = is24 ? 8.8 : 9.6;
 
           return (
             <g key={rowIdx}>
@@ -302,11 +603,11 @@ export const TrainerBoardSVG: React.FC = () => {
                 strokeWidth={1.4}
               />
 
-              {/* ZIF Contact Slots */}
+              {/* Socket Contact Slots */}
               <rect x={layout.bodyX + 6} y={y - 3} width={7} height={6} rx={1} fill="#16191D" />
               <rect x={layout.bodyX + layout.bodyW - 13} y={y - 3} width={7} height={6} rx={1} fill="#16191D" />
 
-              {/* Left High-Contrast Label Plate (between Left Terminal and IC Body) */}
+              {/* Left High-Contrast Label Plate */}
               <rect
                 x={layout.leftTermX + 10}
                 y={y - (is24 ? 7.5 : 8.5)}
@@ -317,10 +618,10 @@ export const TrainerBoardSVG: React.FC = () => {
                 stroke={leftIsNC ? '#2D343B' : '#39434D'}
                 strokeWidth={0.8}
               />
-              {/* Left Shifted/Standard Pin Number */}
+              {/* Left Pin Number */}
               <text
-                x={layout.leftTermX + 14}
-                y={y + 3.8}
+                x={layout.leftTermX + 13}
+                y={y + 3.6}
                 textAnchor="start"
                 fill={leftIsNC ? '#687078' : '#FFFFFF'}
                 fontSize={numFontSize}
@@ -332,11 +633,11 @@ export const TrainerBoardSVG: React.FC = () => {
               {/* Left IC Pin Function Name */}
               {leftInfo.icPinName && !leftIsNC && (
                 <text
-                  x={layout.bodyX - 6}
-                  y={y + 3.5}
+                  x={layout.bodyX - 5}
+                  y={y + 3.4}
                   textAnchor="end"
                   fill={pinDirectionColor(leftInfo.icPinDirection)}
-                  fontSize={leftInfo.icPinName.length > 5 ? 8.2 : nameFontSize}
+                  fontSize={leftInfo.icPinName.length > 4 ? 7.8 : nameFontSize}
                   fontWeight={700}
                   fontFamily="IBM Plex Mono, monospace"
                 >
@@ -344,7 +645,7 @@ export const TrainerBoardSVG: React.FC = () => {
                 </text>
               )}
 
-              {/* Right High-Contrast Label Plate (between IC Body and Right Terminal) */}
+              {/* Right High-Contrast Label Plate */}
               <rect
                 x={layout.bodyX + layout.bodyW + 3}
                 y={y - (is24 ? 7.5 : 8.5)}
@@ -358,21 +659,21 @@ export const TrainerBoardSVG: React.FC = () => {
               {/* Right IC Pin Function Name */}
               {rightInfo.icPinName && !rightIsNC && (
                 <text
-                  x={layout.bodyX + layout.bodyW + 6}
-                  y={y + 3.5}
+                  x={layout.bodyX + layout.bodyW + 5}
+                  y={y + 3.4}
                   textAnchor="start"
                   fill={pinDirectionColor(rightInfo.icPinDirection)}
-                  fontSize={rightInfo.icPinName.length > 5 ? 8.2 : nameFontSize}
+                  fontSize={rightInfo.icPinName.length > 4 ? 7.8 : nameFontSize}
                   fontWeight={700}
                   fontFamily="IBM Plex Mono, monospace"
                 >
                   {rightInfo.icPinName}
                 </text>
               )}
-              {/* Right Shifted/Standard Pin Number (shifts 16->14 automatically for 14-pin ICs!) */}
+              {/* Right Shifted/Standard Pin Number */}
               <text
-                x={layout.rightTermX - 14}
-                y={y + 3.8}
+                x={layout.rightTermX - 13}
+                y={y + 3.6}
                 textAnchor="end"
                 fill={rightIsNC ? '#687078' : is14PinShifted ? '#FFD479' : '#FFFFFF'}
                 fontSize={numFontSize}
@@ -385,11 +686,48 @@ export const TrainerBoardSVG: React.FC = () => {
           );
         })}
 
-        {/* Inserted DIP IC Package */}
+        {/* Inserted DIP IC Package (Draggable to Dustbin or another compatible empty socket) */}
         {occupant && occupantDef && (
           <g
-            className="cursor-pointer"
+            role="button"
+            aria-label={`Placed IC ${occupant.partNumber} in ${socketId} (drag to Dustbin to delete)`}
+            data-placed-ic={occupant.partNumber}
+            data-placed-socket={socketId}
+            className="cursor-grab active:cursor-grabbing"
+            opacity={isBeingDragged ? 0.22 : 1}
             onClick={() => setSelectedICInstanceId(occupant.instanceId)}
+            onMouseDown={(e) => {
+              if (e.button !== 0 || wiringFrom) return;
+              e.stopPropagation();
+              setSelectedICInstanceId(occupant.instanceId);
+              const half = occupantDef.pinCount / 2;
+              const chipTop = layout.pinStartY - 11;
+              const chipHeight = (half - 1) * layout.pinStepY + 22;
+              const originX = layout.bodyX + layout.bodyW / 2;
+              const originY = chipTop + chipHeight / 2;
+              const pt = toSvgCoords(e.clientX, e.clientY) ?? { x: originX, y: originY };
+              const silkscreen =
+                occupant.partNumber === '6116'
+                  ? 'HM6116P-3 SRAM'
+                  : occupantDef.family === 'CMOS'
+                  ? `CD${occupant.partNumber}BE`
+                  : `SN74LS${occupant.partNumber.replace(/^74/, '')}N`;
+
+              setDragIC({
+                instanceId: occupant.instanceId,
+                partNumber: occupant.partNumber,
+                silkscreen,
+                pinCount: occupantDef.pinCount,
+                originSocketId: socketId,
+                originX,
+                originY,
+                currentX: pt.x,
+                currentY: pt.y,
+                chipW: layout.bodyW - 24,
+                chipH: chipHeight,
+                phase: 'dragging',
+              });
+            }}
           >
             {(() => {
               const half = occupantDef.pinCount / 2;
@@ -451,7 +789,7 @@ export const TrainerBoardSVG: React.FC = () => {
           </g>
         )}
 
-        {/* Built-in Bottom GND Label (above bottom-center black socket, matching reference image) */}
+        {/* Built-in Bottom GND Label */}
         <text
           x={layout.gndX}
           y={layout.gndY - 12}
@@ -512,7 +850,8 @@ export const TrainerBoardSVG: React.FC = () => {
         if (info.displayedPin === 'NC') {
           return `${geom.socketId} · Unused Slot (NC on 14-pin ${info.partNumber})`;
         }
-        return `${geom.socketId} Pin ${info.displayedPin} · ${info.partNumber} (${info.icPinName}) [${lvl}]`;
+        const dirTag = formatDirectionTag(info.icPinDirection);
+        return `${geom.socketId} Pin ${info.displayedPin} · ${info.partNumber} (${info.icPinName} ${dirTag}) [${lvl}]`;
       }
     }
 
@@ -521,7 +860,8 @@ export const TrainerBoardSVG: React.FC = () => {
       if (!def) continue;
       for (const pin of def.pins) {
         if (getICPinTerminalId(ic, pin.pin) === termId) {
-          return `${base} · ${ic.partNumber} Pin ${pin.pin} (${pin.name}) [${lvl}]`;
+          const dirTag = formatDirectionTag(pin.direction);
+          return `${base} · ${ic.partNumber} Pin ${pin.pin} (${pin.name} ${dirTag}) [${lvl}]`;
         }
       }
     }
@@ -535,8 +875,6 @@ export const TrainerBoardSVG: React.FC = () => {
       const isOccupied = occupiedSockets.has(term.id);
       const lvl = simulation.terminalStates[term.id] ?? 'Z';
 
-      // Circular metallic banana/patch socket for Trainer Panel & ZIF Pins
-      // Match reference image: Red for +5V, Black for GND, Yellow for ZIF IC pins, Silver/Steel for panel I/O
       const ringColor =
         term.id.startsWith('PWR:+5V')
           ? '#D13B31'
@@ -559,8 +897,11 @@ export const TrainerBoardSVG: React.FC = () => {
           aria-label={term.label}
           data-terminal-id={term.id}
           className="cursor-crosshair"
-          onMouseEnter={() => setHoverTerminal(term.id)}
+          onMouseEnter={() => {
+            if (!isMarqueeDragging) setHoverTerminal(term.id);
+          }}
           onMouseLeave={() => setHoverTerminal((h) => (h === term.id ? null : h))}
+          onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
             startOrCompleteWiring(term.id);
@@ -598,6 +939,50 @@ export const TrainerBoardSVG: React.FC = () => {
     });
   };
 
+  // Determine Dustbin visual state (open angled cap + zoom in when IC dragged near/over it or during deletion drop)
+  const isDragOverBin =
+    Boolean(dragIC && dragIC.phase === 'dragging' && isPointOverDustbin(dragIC.currentX, dragIC.currentY));
+  const isBinOpen = Boolean(isDragOverBin || (dragIC && dragIC.phase === 'deleting-drop'));
+  const isBinZoomed = Boolean(isBinOpen || hoverDustbin);
+
+  // Clicking the Dustbin directly deletes the currently selected IC (or last placed IC) with the same smooth animation
+  const handleDustbinClick = () => {
+    if (dragIC) return;
+    const targetIC =
+      circuit.placedICs.find((p) => p.instanceId === selectedICInstanceId) ??
+      circuit.placedICs[circuit.placedICs.length - 1];
+    if (!targetIC || targetIC.placement.kind !== 'zif') return;
+    const def = getICDefinition(targetIC.partNumber);
+    if (!def) return;
+    const layout = getZifLayout(targetIC.placement.socketId);
+    const half = def.pinCount / 2;
+    const chipTop = layout.pinStartY - 11;
+    const chipHeight = (half - 1) * layout.pinStepY + 22;
+    const originX = layout.bodyX + layout.bodyW / 2;
+    const originY = chipTop + chipHeight / 2;
+    const silkscreen =
+      targetIC.partNumber === '6116'
+        ? 'HM6116P-3 SRAM'
+        : def.family === 'CMOS'
+        ? `CD${targetIC.partNumber}BE`
+        : `SN74LS${targetIC.partNumber.replace(/^74/, '')}N`;
+
+    triggerAnimatedBinDelete({
+      instanceId: targetIC.instanceId,
+      partNumber: targetIC.partNumber,
+      silkscreen,
+      pinCount: def.pinCount,
+      originSocketId: targetIC.placement.socketId,
+      originX,
+      originY,
+      currentX: originX,
+      currentY: originY,
+      chipW: layout.bodyW - 24,
+      chipH: chipHeight,
+      phase: 'deleting-drop',
+    });
+  };
+
   return (
     <div className="relative w-full bg-[#20252B] rounded-md border border-[#303840] p-2 select-none">
       <svg
@@ -606,6 +991,7 @@ export const TrainerBoardSVG: React.FC = () => {
         shapeRendering="geometricPrecision"
         textRendering="geometricPrecision"
         className="w-full h-auto block"
+        onMouseDown={handleSvgMouseDown}
         onMouseMove={handleSvgMouseMove}
         onMouseUp={handleSvgMouseUp}
         onContextMenu={handleSvgContextMenu}
@@ -619,10 +1005,13 @@ export const TrainerBoardSVG: React.FC = () => {
         <text x={32} y={36} fill="#F1F0EB" fontSize={12.5} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
           LOGICBENCH DT-1004 DIGITAL TRAINER
         </text>
+        <text x={BOARD_WIDTH - 32} y={36} textAnchor="end" fill="#A5ACB2" fontSize={10} fontWeight={600} fontFamily="IBM Plex Mono, monospace">
+          DRAG ACROSS WIRES TO MULTI-SELECT &amp; DELETE · DRAG IC TO DUSTBIN · CTRL+Z UNDO
+        </text>
 
-        {/* ================= A. MAIN POWER SECTION (CLEAN ROCKER & STATUS, +5V/GND INTEGRATED IN ZIF SOCKETS) ================= */}
+        {/* ================= A. MAIN POWER SECTION (x=32, w=194) ================= */}
         <g>
-          <rect x={32} y={46} width={212} height={174} rx={4} fill="#252B32" stroke="#47505A" strokeWidth={1} />
+          <rect x={32} y={46} width={194} height={174} rx={4} fill="#252B32" stroke="#47505A" strokeWidth={1} />
           <text x={44} y={65} fill="#F1F0EB" fontSize={11} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
             POWER SUPPLY
           </text>
@@ -632,6 +1021,7 @@ export const TrainerBoardSVG: React.FC = () => {
             role="button"
             aria-label={circuit.powerOn ? 'Main Power Switch ON' : 'Main Power Switch OFF'}
             className="cursor-pointer"
+            onMouseDown={(e) => e.stopPropagation()}
             onClick={togglePower}
           >
             <rect x={44} y={78} width={64} height={42} rx={3} fill="#181C20" stroke="#5A636D" strokeWidth={1.2} />
@@ -650,50 +1040,51 @@ export const TrainerBoardSVG: React.FC = () => {
 
           {/* Pilot Power LED */}
           <circle
-            cx={146}
+            cx={136}
             cy={99}
             r={9}
             fill={circuit.powerOn ? '#66A37D' : '#22282E'}
             stroke={circuit.powerOn ? '#95CBA8' : '#47505A'}
             strokeWidth={1.5}
           />
-          <text x={162} y={103} fill="#F1F0EB" fontSize={10.5} fontWeight={600} fontFamily="IBM Plex Mono, monospace">
+          <text x={152} y={103} fill="#F1F0EB" fontSize={10.5} fontWeight={600} fontFamily="IBM Plex Mono, monospace">
             +5V DC
           </text>
 
           {/* Integrated Socket Power Reference Note */}
-          <rect x={44} y={148} width={188} height={58} rx={3} fill="#1B2026" stroke="#39434D" strokeWidth={1} />
-          <circle cx={58} cy={164} r={5} fill="#D13B31" stroke="#E5E5E1" strokeWidth={1} />
-          <text x={70} y={168} fill="#F1F0EB" fontSize={9.5} fontWeight={600} fontFamily="IBM Plex Mono, monospace">
+          <rect x={42} y={148} width={174} height={58} rx={3} fill="#1B2026" stroke="#39434D" strokeWidth={1} />
+          <circle cx={54} cy={164} r={5} fill="#D13B31" stroke="#E5E5E1" strokeWidth={1} />
+          <text x={65} y={168} fill="#F1F0EB" fontSize={9.2} fontWeight={600} fontFamily="IBM Plex Mono, monospace">
             +5V: Top of each ZIF
           </text>
-          <circle cx={58} cy={188} r={5} fill="#181C20" stroke="#E5E5E1" strokeWidth={1} />
-          <text x={70} y={192} fill="#D6D5CE" fontSize={9.5} fontWeight={600} fontFamily="IBM Plex Mono, monospace">
+          <circle cx={54} cy={188} r={5} fill="#181C20" stroke="#E5E5E1" strokeWidth={1} />
+          <text x={65} y={192} fill="#D6D5CE" fontSize={9.2} fontWeight={600} fontFamily="IBM Plex Mono, monospace">
             GND: Bottom of each ZIF
           </text>
         </g>
 
-        {/* ================= D & E. CLOCK & PULSE GENERATORS ================= */}
+        {/* ================= D & E. CLOCK & PULSE GENERATORS (x=238, w=290) ================= */}
         <g>
-          <rect x={256} y={46} width={302} height={174} rx={4} fill="#252B32" stroke="#47505A" strokeWidth={1} />
-          <text x={268} y={65} fill="#F1F0EB" fontSize={11} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
+          <rect x={238} y={46} width={290} height={174} rx={4} fill="#252B32" stroke="#47505A" strokeWidth={1} />
+          <text x={250} y={65} fill="#F1F0EB" fontSize={11} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
             CLOCK &amp; PULSE GENERATOR
           </text>
 
           {/* Clock Mode Buttons */}
           {(['manual', 'single-step', 'auto'] as const).map((m, idx) => {
             const active = circuit.clock.mode === m;
-            const bx = 268 + idx * 64;
+            const bx = 250 + idx * 62;
             return (
               <g
                 key={m}
                 className="cursor-pointer"
+                onMouseDown={(e) => e.stopPropagation()}
                 onClick={() => setClockMode(m)}
               >
                 <rect
                   x={bx}
                   y={74}
-                  width={60}
+                  width={58}
                   height={20}
                   rx={2.5}
                   fill={active ? '#456A83' : '#1B2026'}
@@ -701,7 +1092,7 @@ export const TrainerBoardSVG: React.FC = () => {
                   strokeWidth={1}
                 />
                 <text
-                  x={bx + 30}
+                  x={bx + 29}
                   y={87}
                   textAnchor="middle"
                   fill="#F1F0EB"
@@ -715,44 +1106,55 @@ export const TrainerBoardSVG: React.FC = () => {
             );
           })}
 
-          {/* Clock Action Button (Manual Push or Step or Auto Start/Stop) */}
+          {/* Clock Action Button */}
           {circuit.clock.mode === 'manual' && (
             <g
               className="cursor-pointer"
-              onMouseDown={() => triggerManualClockPress(true)}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                triggerManualClockPress(true);
+              }}
               onMouseUp={() => triggerManualClockPress(false)}
               onMouseLeave={() => {
                 if (circuit.clock.level === 1) triggerManualClockPress(false);
               }}
             >
-              <rect x={268} y={102} width={110} height={32} rx={3} fill="#36404A" stroke="#747C82" strokeWidth={1.2} />
-              <circle cx={286} cy={118} r={6.5} fill={circuit.clock.level === 1 && circuit.powerOn ? '#DF5D55' : '#7B2B26'} />
-              <text x={330} y={121} textAnchor="middle" fill="#F1F0EB" fontSize={9.5} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
+              <rect x={250} y={102} width={108} height={32} rx={3} fill="#36404A" stroke="#747C82" strokeWidth={1.2} />
+              <circle cx={267} cy={118} r={6.5} fill={circuit.clock.level === 1 && circuit.powerOn ? '#DF5D55' : '#7B2B26'} />
+              <text x={312} y={121} textAnchor="middle" fill="#F1F0EB" fontSize={9.5} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
                 HOLD PULSE
               </text>
             </g>
           )}
           {circuit.clock.mode === 'single-step' && (
-            <g className="cursor-pointer" onClick={triggerSingleStepClock}>
-              <rect x={268} y={102} width={110} height={32} rx={3} fill="#36404A" stroke="#747C82" strokeWidth={1.2} />
-              <text x={323} y={121} textAnchor="middle" fill="#F1F0EB" fontSize={9.5} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
+            <g
+              className="cursor-pointer"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={triggerSingleStepClock}
+            >
+              <rect x={250} y={102} width={108} height={32} rx={3} fill="#36404A" stroke="#747C82" strokeWidth={1.2} />
+              <text x={304} y={121} textAnchor="middle" fill="#F1F0EB" fontSize={9.5} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
                 STEP ({circuit.clock.level}→{circuit.clock.level === 1 ? 0 : 1})
               </text>
             </g>
           )}
           {circuit.clock.mode === 'auto' && (
-            <g className="cursor-pointer" onClick={toggleAutoClock}>
+            <g
+              className="cursor-pointer"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={toggleAutoClock}
+            >
               <rect
-                x={268}
+                x={250}
                 y={102}
-                width={110}
+                width={108}
                 height={32}
                 rx={3}
                 fill={circuit.clock.autoRunning ? '#587965' : '#36404A'}
                 stroke="#747C82"
                 strokeWidth={1.2}
               />
-              <text x={323} y={121} textAnchor="middle" fill="#F1F0EB" fontSize={9.5} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
+              <text x={304} y={121} textAnchor="middle" fill="#F1F0EB" fontSize={9.5} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
                 {circuit.clock.autoRunning ? 'STOP AUTO' : 'START AUTO'}
               </text>
             </g>
@@ -760,33 +1162,37 @@ export const TrainerBoardSVG: React.FC = () => {
 
           {/* Clock LED + Telemetry */}
           <circle
-            cx={398}
+            cx={378}
             cy={118}
             r={6.5}
             fill={circuit.powerOn && circuit.clock.level === 1 ? '#66A37D' : '#1E2329'}
             stroke="#5A636D"
             strokeWidth={1}
           />
-          <text x={412} y={114} fill="#F1F0EB" fontSize={9.5} fontWeight={600} fontFamily="IBM Plex Mono, monospace">
+          <text x={392} y={114} fill="#F1F0EB" fontSize={9.5} fontWeight={600} fontFamily="IBM Plex Mono, monospace">
             {circuit.clock.frequencyHz.toFixed(1)}Hz
           </text>
-          <text x={412} y={127} fill="#A5ACB2" fontSize={9} fontFamily="IBM Plex Mono, monospace">
+          <text x={392} y={127} fill="#A5ACB2" fontSize={9} fontFamily="IBM Plex Mono, monospace">
             {circuit.clock.dutyCyclePercent}%
           </text>
 
-          <text x={484} y={92} textAnchor="middle" fill="#F1F0EB" fontSize={9.5} fontWeight={700} fontFamily="IBM Plex Mono, monospace">CLK</text>
-          <text x={528} y={92} textAnchor="middle" fill="#F1F0EB" fontSize={9.5} fontWeight={700} fontFamily="IBM Plex Mono, monospace">~CLK</text>
+          <text x={468} y={92} textAnchor="middle" fill="#F1F0EB" fontSize={9.5} fontWeight={700} fontFamily="IBM Plex Mono, monospace">CLK</text>
+          <text x={506} y={92} textAnchor="middle" fill="#F1F0EB" fontSize={9.5} fontWeight={700} fontFamily="IBM Plex Mono, monospace">~CLK</text>
 
           {/* Divider */}
-          <line x1={268} y1={144} x2={546} y2={144} stroke="#3A424B" strokeWidth={1} />
+          <line x1={250} y1={144} x2={516} y2={144} stroke="#3A424B" strokeWidth={1} />
 
           {/* Pulse Generator */}
-          <text x={268} y={162} fill="#D6D5CE" fontSize={9.5} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
+          <text x={250} y={162} fill="#D6D5CE" fontSize={9.5} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
             AUX PULSE GEN
           </text>
-          <g className="cursor-pointer" onClick={togglePulseGenerator}>
+          <g
+            className="cursor-pointer"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={togglePulseGenerator}
+          >
             <rect
-              x={268}
+              x={250}
               y={170}
               width={96}
               height={30}
@@ -795,120 +1201,105 @@ export const TrainerBoardSVG: React.FC = () => {
               stroke="#5A636D"
               strokeWidth={1}
             />
-            <text x={316} y={189} textAnchor="middle" fill="#F1F0EB" fontSize={9.5} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
+            <text x={298} y={189} textAnchor="middle" fill="#F1F0EB" fontSize={9.5} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
               {circuit.pulse.running ? 'STOP PULSE' : 'START PULSE'}
             </text>
           </g>
           <circle
-            cx={384}
+            cx={364}
             cy={186}
             r={6.5}
             fill={circuit.powerOn && circuit.pulse.level === 1 ? '#66A37D' : '#1E2329'}
             stroke="#5A636D"
             strokeWidth={1}
           />
-          <text x={400} y={183} fill="#F1F0EB" fontSize={9.5} fontWeight={600} fontFamily="IBM Plex Mono, monospace">
+          <text x={380} y={183} fill="#F1F0EB" fontSize={9.5} fontWeight={600} fontFamily="IBM Plex Mono, monospace">
             {circuit.pulse.frequencyHz.toFixed(1)}Hz
           </text>
-          <text x={400} y={196} fill="#A5ACB2" fontSize={9} fontFamily="IBM Plex Mono, monospace">
+          <text x={380} y={196} fill="#A5ACB2" fontSize={9} fontFamily="IBM Plex Mono, monospace">
             {circuit.pulse.dutyCyclePercent}%
           </text>
-          <text x={506} y={170} textAnchor="middle" fill="#F1F0EB" fontSize={9.5} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
+          <text x={487} y={170} textAnchor="middle" fill="#F1F0EB" fontSize={9.5} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
             PULSE
           </text>
         </g>
 
-        {/* ================= F & G. ONBOARD SEVEN-SEGMENT DISPLAYS (LTS542) ================= */}
+        {/* ================= F. SINGLE ONBOARD SEVEN-SEGMENT DISPLAY (LTS542) (x=540, w=216) ================= */}
         <g>
-          <rect x={570} y={46} width={356} height={174} rx={4} fill="#252B32" stroke="#47505A" strokeWidth={1} />
-          <text x={582} y={65} fill="#F1F0EB" fontSize={11} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
-            7-SEGMENT DISPLAY (COMMON ANODE · LTS542)
+          <rect x={540} y={46} width={216} height={174} rx={4} fill="#252B32" stroke="#47505A" strokeWidth={1} />
+          <text x={552} y={65} fill="#F1F0EB" fontSize={11} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
+            7-SEG DISPLAY (LTS542)
           </text>
 
           <SevenSegDigitSVG
-            x={634}
-            y={70}
+            x={616}
+            y={68}
             label="D1"
             segments={simulation.displays.DISP1.segments}
             powerOn={circuit.powerOn}
           />
-          <SevenSegDigitSVG
-            x={810}
-            y={70}
-            label="D2"
-            segments={simulation.displays.DISP2.segments}
-            powerOn={circuit.powerOn}
-          />
 
-          {/* Segment pin labels */}
-          {(['DISP1', 'DISP2'] as const).map((dispId, dIdx) => {
-            const bx = dIdx === 0 ? 590 : 766;
-            const r1 = ['a', 'b', 'c', 'd', 'e'] as const;
-            const r2 = ['f', 'g', 'dp', 'CA'] as const;
-            return (
-              <g key={dispId}>
-                {r1.map((seg, i) => (
-                  <text
-                    key={seg}
-                    x={bx + 20 + i * 30}
-                    y={184}
-                    textAnchor="middle"
-                    fill="#F1F0EB"
-                    fontSize={9.5}
-                    fontWeight={600}
-                    fontFamily="IBM Plex Mono, monospace"
-                  >
-                    {seg}
-                  </text>
-                ))}
-                {r2.map((seg, i) => (
-                  <text
-                    key={seg}
-                    x={bx + 35 + i * 30}
-                    y={215}
-                    textAnchor="middle"
-                    fill={seg === 'CA' ? '#FF857A' : '#F1F0EB'}
-                    fontSize={9.5}
-                    fontWeight={700}
-                    fontFamily="IBM Plex Mono, monospace"
-                  >
-                    {seg}
-                  </text>
-                ))}
-              </g>
-            );
-          })}
+          {/* Single Display Segment Pin Labels (generous 38px horizontal spacing) */}
+          {(['a', 'b', 'c', 'd', 'e'] as const).map((seg, i) => (
+            <text
+              key={seg}
+              x={572 + i * 38}
+              y={184}
+              textAnchor="middle"
+              fill="#F1F0EB"
+              fontSize={10.5}
+              fontWeight={700}
+              fontFamily="IBM Plex Mono, monospace"
+            >
+              {seg}
+            </text>
+          ))}
+          {(['f', 'g', 'dp', 'CA'] as const).map((seg, i) => (
+            <text
+              key={seg}
+              x={591 + i * 38}
+              y={215}
+              textAnchor="middle"
+              fill={seg === 'CA' ? '#FF857A' : '#F1F0EB'}
+              fontSize={10.5}
+              fontWeight={700}
+              fontFamily="IBM Plex Mono, monospace"
+            >
+              {seg}
+            </text>
+          ))}
         </g>
 
-        {/* ================= C. 16 DIGITAL OUTPUT LEDS ================= */}
+        {/* ================= C. EXPANDED & OPTIMIZED 16 DIGITAL OUTPUT LEDS (x=768, w=472) ================= */}
         <g>
-          <rect x={938} y={46} width={430} height={174} rx={4} fill="#252B32" stroke="#47505A" strokeWidth={1} />
-          <text x={950} y={65} fill="#F1F0EB" fontSize={11} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
+          <rect x={768} y={46} width={472} height={174} rx={4} fill="#252B32" stroke="#47505A" strokeWidth={1} />
+          <text x={782} y={65} fill="#F1F0EB" fontSize={11} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
             DIGITAL OUTPUT INDICATORS (L0 – L15)
           </text>
 
           {Array.from({ length: 16 }).map((_, i) => {
             const row = Math.floor(i / 8);
             const col = i % 8;
-            const x = 966 + col * 51;
-            const termY = row === 0 ? 112 : 196;
-            const ledY = row === 0 ? 86 : 170;
+            const x = 804 + col * 57;
+            const termY = row === 0 ? 112 : 192;
+            const ledY = row === 0 ? 84 : 164;
             const lvl = simulation.ledStates[i] ?? 'Z';
             const colors = ledFill(lvl, circuit.powerOn);
+
             return (
               <g
                 key={i}
                 data-led-index={i}
                 data-led-state={circuit.powerOn ? String(lvl) : 'OFF'}
               >
-                <circle cx={x} cy={ledY} r={10} fill="#181C20" stroke="#47505A" strokeWidth={1} />
-                <circle cx={x} cy={ledY} r={7.2} fill={colors.fill} stroke={colors.ring} strokeWidth={1.2} />
+                <circle cx={x} cy={ledY} r={10.5} fill="#181C20" stroke="#47505A" strokeWidth={1.1} />
+                <circle cx={x} cy={ledY} r={7.6} fill={colors.fill} stroke={colors.ring} strokeWidth={1.2} />
                 <text
                   x={x}
-                  y={ledY + 3.2}
+                  y={ledY + 3.4}
                   textAnchor="middle"
                   fill="#FFFFFF"
-                  fontSize={8.5}
+                  fontSize={9}
                   fontWeight={700}
                   fontFamily="IBM Plex Mono, monospace"
                 >
@@ -916,10 +1307,10 @@ export const TrainerBoardSVG: React.FC = () => {
                 </text>
                 <text
                   x={x}
-                  y={termY + 19}
+                  y={termY + 17}
                   textAnchor="middle"
                   fill="#F1F0EB"
-                  fontSize={9.5}
+                  fontSize={10}
                   fontWeight={700}
                   fontFamily="IBM Plex Mono, monospace"
                 >
@@ -930,13 +1321,110 @@ export const TrainerBoardSVG: React.FC = () => {
           })}
         </g>
 
-        {/* ================= H. 5 ZIF IC SOCKETS (4 × 16-PIN + 1 × 24-PIN RAM, WITH INTEGRATED +5V/GND) ================= */}
+        {/* ================= I. INTERACTIVE IC DUSTBIN DISPOSAL MODULE (x=1252, w=116) ================= */}
+        <g
+          role="button"
+          aria-label="IC Dustbin — Drag any IC here or click to delete"
+          data-testid="ic-dustbin"
+          data-bin-open={isBinOpen ? 'true' : 'false'}
+          className="cursor-pointer"
+          onMouseEnter={() => setHoverDustbin(true)}
+          onMouseLeave={() => setHoverDustbin(false)}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={handleDustbinClick}
+        >
+          <rect
+            x={DUSTBIN_LAYOUT.x}
+            y={DUSTBIN_LAYOUT.y}
+            width={DUSTBIN_LAYOUT.width}
+            height={DUSTBIN_LAYOUT.height}
+            rx={4}
+            fill={isBinOpen ? '#332424' : '#252B32'}
+            stroke={isBinOpen ? '#DF5D55' : hoverDustbin ? '#8D959C' : '#47505A'}
+            strokeWidth={isBinOpen ? 2 : 1.2}
+          />
+          <text
+            x={DUSTBIN_LAYOUT.centerX}
+            y={65}
+            textAnchor="middle"
+            fill={isBinOpen ? '#FF857A' : '#F1F0EB'}
+            fontSize={10.5}
+            fontWeight={700}
+            fontFamily="IBM Plex Mono, monospace"
+          >
+            IC DUSTBIN
+          </text>
+
+          {/* Animated Dustbin Vector Graphic */}
+          <g
+            style={{
+              transformBox: 'fill-box',
+              transformOrigin: 'center center',
+              transform: isBinZoomed ? 'scale(1.18)' : 'scale(1)',
+              transition: 'transform 240ms cubic-bezier(0.22, 1, 0.36, 1)',
+            }}
+          >
+            {/* Dustbin Lid + Handle */}
+            <g
+              style={{
+                transformBox: 'fill-box',
+                transformOrigin: '92% 100%',
+                transform: isBinOpen
+                  ? 'translate(0px, -6px) rotate(24deg)'
+                  : 'translate(0px, 0px) rotate(0deg)',
+                transition: 'transform 240ms cubic-bezier(0.22, 1, 0.36, 1)',
+              }}
+            >
+              <path
+                d="M 1299 110 L 1299 100 Q 1299 97 1302 97 L 1318 97 Q 1321 97 1321 100 L 1321 110"
+                fill="none"
+                stroke={isBinOpen ? '#FF9A92' : '#F1F0EB'}
+                strokeWidth={4.2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <line
+                x1={1280}
+                y1={111}
+                x2={1340}
+                y2={111}
+                stroke={isBinOpen ? '#FF9A92' : '#F1F0EB'}
+                strokeWidth={5.2}
+                strokeLinecap="round"
+              />
+            </g>
+
+            {/* Tapered Dustbin Bucket Body */}
+            <path
+              d="M 1287 118 L 1291 174 Q 1291.5 180 1297 180 L 1323 180 Q 1328.5 180 1329 174 L 1333 118"
+              fill="#181C20"
+              stroke={isBinOpen ? '#FF857A' : '#F1F0EB'}
+              strokeWidth={4.4}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </g>
+
+          <text
+            x={DUSTBIN_LAYOUT.centerX}
+            y={207}
+            textAnchor="middle"
+            fill={isBinOpen ? '#FF9A92' : '#A5ACB2'}
+            fontSize={8.8}
+            fontWeight={600}
+            fontFamily="IBM Plex Mono, monospace"
+          >
+            {isBinOpen ? 'RELEASE TO DELETE' : 'DRAG IC HERE'}
+          </text>
+        </g>
+
+        {/* ================= H. 5 ZIF IC SOCKETS (4 × 16-PIN + 1 × 24-PIN RAM) ================= */}
         {ALL_ZIF_SOCKETS.map((sockId) => renderZifSocket(sockId))}
 
         {/* ================= B. 16 DIGITAL INPUT SWITCHES ================= */}
         <g>
           <rect x={32} y={660} width={1336} height={168} rx={4} fill="#252B32" stroke="#47505A" strokeWidth={1} />
-          <text x={44} y={678} fill="#F1F0EB" fontSize={11} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
+          <text x={44} y={676} fill="#F1F0EB" fontSize={11} fontWeight={700} fontFamily="IBM Plex Mono, monospace">
             DIGITAL INPUT SWITCHES (SW0 – SW15)
           </text>
 
@@ -944,6 +1432,7 @@ export const TrainerBoardSVG: React.FC = () => {
             const x = 74 + i * 83.2;
             const val = circuit.switches[i] ?? 0;
             const isHigh = val === 1;
+
             return (
               <g key={i}>
                 {/* State indicator */}
@@ -964,6 +1453,7 @@ export const TrainerBoardSVG: React.FC = () => {
                   aria-checked={isHigh}
                   aria-label={`Input Switch SW${i}`}
                   className="cursor-pointer"
+                  onMouseDown={(e) => e.stopPropagation()}
                   onClick={() => toggleSwitch(i)}
                 >
                   <rect x={x - 14} y={730} width={28} height={54} rx={3} fill="#181C20" stroke="#5A636D" strokeWidth={1.2} />
@@ -996,8 +1486,8 @@ export const TrainerBoardSVG: React.FC = () => {
           })}
         </g>
 
-        {/* ================= PATCH CORDS & BREADBOARD JUMPERS (BELOW SOCKET TARGETS) ================= */}
-        <g pointerEvents={wiringFrom ? 'none' : 'auto'}>
+        {/* ================= PATCH CORDS (BELOW SOCKET TARGETS) ================= */}
+        <g pointerEvents={wiringFrom || isMarqueeDragging ? 'none' : 'auto'}>
           {circuit.wires.map((wire, idx) => {
             const fromG = getTerminalGeometry(wire.from);
             const toG = getTerminalGeometry(wire.to);
@@ -1010,11 +1500,53 @@ export const TrainerBoardSVG: React.FC = () => {
               wire.controlOffset
             );
             const colors = WIRE_COLOR_HEX[wire.color];
-            const isSelected = selectedWireId === wire.id;
+            const isSelected = selectedWireIds.includes(wire.id) || selectedWireId === wire.id;
+            const isHovered = hoverWireId === wire.id;
             const strokeWidth = wire.kind === 'jumper' ? 3 : 4.2;
 
+            const startWireDragFromAnyPoint = (e: React.MouseEvent<SVGPathElement>) => {
+              if (e.button !== 0 || wiringFrom) return;
+              e.stopPropagation();
+              if (e.shiftKey) {
+                toggleSelectedWireId(wire.id);
+                return;
+              }
+              if (!selectedWireIds.includes(wire.id)) {
+                setSelectedWireId(wire.id);
+              }
+              const pt = toSvgCoords(e.clientX, e.clientY);
+              if (!pt) return;
+              setDraggingWireMid({
+                wireId: wire.id,
+                startX: pt.x,
+                startY: pt.y,
+                origDx: wire.controlOffset?.dx ?? 0,
+                origDy: wire.controlOffset?.dy ?? 0,
+              });
+            };
+
             return (
-              <g key={wire.id}>
+              <g
+                key={wire.id}
+                data-wire-id={wire.id}
+                data-wire-selected={isSelected ? 'true' : 'false'}
+                onMouseEnter={() => {
+                  if (!isMarqueeDragging) setHoverWireId(wire.id);
+                }}
+                onMouseLeave={() => setHoverWireId((prev) => (prev === wire.id ? null : prev))}
+              >
+                {/* Selection outer halo when part of multi-wire or single selection */}
+                {isSelected && (
+                  <path
+                    d={d}
+                    fill="none"
+                    stroke="#FFFFFF"
+                    strokeOpacity={0.75}
+                    strokeWidth={strokeWidth + 4.2}
+                    strokeLinecap="round"
+                    pointerEvents="none"
+                  />
+                )}
                 {/* Subtle cable shadow */}
                 <path
                   d={d}
@@ -1025,19 +1557,27 @@ export const TrainerBoardSVG: React.FC = () => {
                   transform="translate(0, 2.5)"
                   pointerEvents="none"
                 />
+                {/* Wide transparent hit area so user can grab and drag the patch cord from ANY point along its curve */}
+                <path
+                  d={d}
+                  fill="none"
+                  stroke="transparent"
+                  strokeWidth={13}
+                  strokeLinecap="round"
+                  pointerEvents={wiringFrom ? 'none' : 'stroke'}
+                  className="cursor-grab active:cursor-grabbing"
+                  onMouseDown={startWireDragFromAnyPoint}
+                />
                 {/* Insulated wire body */}
                 <path
                   d={d}
                   fill="none"
-                  stroke={isSelected ? colors.highlight : colors.stroke}
-                  strokeWidth={isSelected ? strokeWidth + 1.2 : strokeWidth}
+                  stroke={isSelected || isHovered ? colors.highlight : colors.stroke}
+                  strokeWidth={isSelected ? strokeWidth + 1.4 : strokeWidth}
                   strokeLinecap="round"
                   pointerEvents={wiringFrom ? 'none' : 'stroke'}
-                  className="cursor-pointer"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setSelectedWireId(isSelected ? null : wire.id);
-                  }}
+                  className="cursor-grab active:cursor-grabbing"
+                  onMouseDown={startWireDragFromAnyPoint}
                 />
               </g>
             );
@@ -1047,14 +1587,14 @@ export const TrainerBoardSVG: React.FC = () => {
         {/* ================= TERMINAL SOCKETS (ALWAYS CLICKABLE ON TOP OF CORDS) ================= */}
         {renderTerminalSockets()}
 
-        {/* ================= PLUG BOOTS, ACTIVE CORD PREVIEW & SELECTED WIRE HANDLES ================= */}
+        {/* ================= PLUG BOOTS & SELECTED WIRE HANDLES ================= */}
         <g>
           {circuit.wires.map((wire, idx) => {
             const fromG = getTerminalGeometry(wire.from);
             const toG = getTerminalGeometry(wire.to);
             if (!fromG || !toG) return null;
             const colors = WIRE_COLOR_HEX[wire.color];
-            const isSelected = selectedWireId === wire.id;
+            const isSelected = selectedWireIds.includes(wire.id) || selectedWireId === wire.id;
             const { midX, midY } = computeWirePath(
               fromG,
               toG,
@@ -1084,13 +1624,14 @@ export const TrainerBoardSVG: React.FC = () => {
                   strokeWidth={1}
                   pointerEvents="none"
                 />
+
                 {/* Draggable Midpoint & Remove Action when selected */}
                 {isSelected && (
                   <g>
                     <circle
                       cx={midX}
                       cy={midY}
-                      r={7}
+                      r={6.5}
                       fill="#F1F0EB"
                       stroke="#20252B"
                       strokeWidth={1.5}
@@ -1110,15 +1651,16 @@ export const TrainerBoardSVG: React.FC = () => {
                     />
                     <g
                       className="cursor-pointer"
+                      onMouseDown={(e) => e.stopPropagation()}
                       onClick={(e) => {
                         e.stopPropagation();
                         removeWire(wire.id);
                       }}
                     >
-                      <circle cx={midX + 18} cy={midY - 12} r={8.5} fill="#B83A32" stroke="#F1F0EB" strokeWidth={1} />
+                      <circle cx={midX + 18} cy={midY + 8} r={8.5} fill="#B83A32" stroke="#F1F0EB" strokeWidth={1} />
                       <text
                         x={midX + 18}
-                        y={midY - 8.5}
+                        y={midY + 11.5}
                         textAnchor="middle"
                         fill="#F1F0EB"
                         fontSize={10}
@@ -1156,12 +1698,147 @@ export const TrainerBoardSVG: React.FC = () => {
           })()}
         </g>
 
+        {/* ================= MARQUEE DRAG SELECTION RECTANGLE OVERLAY ================= */}
+        {marqueeBox && (
+          <rect
+            x={Math.min(marqueeBox.startX, marqueeBox.currX)}
+            y={Math.min(marqueeBox.startY, marqueeBox.currY)}
+            width={Math.abs(marqueeBox.currX - marqueeBox.startX)}
+            height={Math.abs(marqueeBox.currY - marqueeBox.startY)}
+            fill="rgba(126, 176, 209, 0.16)"
+            stroke="#7EB0D1"
+            strokeWidth={1.6}
+            strokeDasharray="6 4"
+            pointerEvents="none"
+            data-testid="wire-marquee-rect"
+          />
+        )}
+
+        {/* ================= FLOATING BATCH DELETE BAR WHEN WIRES ARE SELECTED ================= */}
+        {selectedWireIds.length >= 1 && (
+          <g
+            role="button"
+            aria-label={`Delete ${selectedWireIds.length} selected wire${selectedWireIds.length > 1 ? 's' : ''}`}
+            data-testid="board-delete-selected-wires"
+            className="cursor-pointer"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              removeWires(selectedWireIds);
+            }}
+          >
+            <rect
+              x={BOARD_WIDTH / 2 - 175}
+              y={14}
+              width={350}
+              height={26}
+              rx={4}
+              fill="#B83A32"
+              stroke="#F1F0EB"
+              strokeWidth={1.3}
+            />
+            <text
+              x={BOARD_WIDTH / 2}
+              y={30.5}
+              textAnchor="middle"
+              fill="#FFFFFF"
+              fontSize={10.5}
+              fontWeight={700}
+              fontFamily="IBM Plex Mono, monospace"
+            >
+              DELETE {selectedWireIds.length} SELECTED WIRE{selectedWireIds.length > 1 ? 'S' : ''} (CLICK OR PRESS DEL)
+            </text>
+          </g>
+        )}
+
+        {/* ================= FLOATING DRAGGED / ANIMATING IC OVERLAY ================= */}
+        {dragIC && (() => {
+          const scale =
+            dragIC.phase === 'deleting-drop'
+              ? 0.14
+              : dragIC.phase === 'deleting-close'
+              ? 0.03
+              : isDragOverBin
+              ? 0.25
+              : 1.02;
+          const opacity =
+            dragIC.phase === 'deleting-close'
+              ? 0
+              : dragIC.phase === 'deleting-drop'
+              ? 0.22
+              : 0.96;
+          const isAnimatedPhase = dragIC.phase !== 'dragging';
+          const half = dragIC.pinCount / 2;
+          const stepY = dragIC.pinCount === 24 ? 24.8 : 36;
+          const hw = dragIC.chipW / 2;
+          const hh = dragIC.chipH / 2;
+
+          return (
+            <g
+              pointerEvents="none"
+              style={{
+                transform: `translate(${dragIC.currentX}px, ${dragIC.currentY}px)`,
+                transition: isAnimatedPhase
+                  ? 'transform 310ms cubic-bezier(0.22, 1, 0.36, 1)'
+                  : 'none',
+              }}
+            >
+              <g
+                style={{
+                  transform: `scale(${scale})`,
+                  transformOrigin: '0px 0px',
+                  opacity,
+                  transition: 'transform 220ms cubic-bezier(0.22, 1, 0.36, 1), opacity 240ms ease',
+                }}
+              >
+                {/* Metallic leads */}
+                {Array.from({ length: half }).map((_, i) => {
+                  const py = -hh + 11 + i * stepY;
+                  return (
+                    <g key={i}>
+                      <rect x={-hw - 7} y={py - 2.5} width={10} height={5} fill="#CFD3D7" />
+                      <rect x={hw - 3} y={py - 2.5} width={10} height={5} fill="#CFD3D7" />
+                    </g>
+                  );
+                })}
+                {/* IC Body */}
+                <rect
+                  x={-hw}
+                  y={-hh}
+                  width={dragIC.chipW}
+                  height={dragIC.chipH}
+                  rx={2.5}
+                  fill="#181B1F"
+                  stroke={isDragOverBin || dragIC.phase.startsWith('deleting') ? '#DF5D55' : '#8CE0AC'}
+                  strokeWidth={2.2}
+                />
+                {/* Pin 1 dot */}
+                <circle cx={-hw + 8} cy={-hh + 10} r={2.4} fill="#C6C9CD" />
+                {/* Silkscreen */}
+                <text
+                  x={0}
+                  y={0}
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                  fill="#FFFFFF"
+                  fontSize={12}
+                  fontWeight={700}
+                  fontFamily="IBM Plex Mono, monospace"
+                  transform="rotate(-90)"
+                >
+                  {dragIC.silkscreen}
+                </text>
+              </g>
+            </g>
+          );
+        })()}
+
         {/* Hover Terminal Tooltip */}
-        {hoverTerminal && (() => {
+        {hoverTerminal && !dragIC && !isMarqueeDragging && (() => {
           const g = getTerminalGeometry(hoverTerminal);
           if (!g) return null;
           const text = getTerminalTooltip(hoverTerminal);
-          const boxW = Math.min(340, Math.max(140, text.length * 6.5 + 16));
+          const boxW = Math.min(540, Math.max(160, text.length * 6.0 + 18));
           const tx = Math.min(BOARD_WIDTH - boxW - 12, Math.max(12, g.x - boxW / 2));
           const ty = g.y < 60 ? g.y + 18 : g.y - 30;
           return (
@@ -1172,7 +1849,7 @@ export const TrainerBoardSVG: React.FC = () => {
                 y={ty + 14}
                 textAnchor="middle"
                 fill="#F1F0EB"
-                fontSize={10}
+                fontSize={9.6}
                 fontFamily="IBM Plex Mono, monospace"
               >
                 {text}

@@ -7,7 +7,7 @@ const LS_FALLBACK_KEY = 'logicbench_projects_v1';
 
 export function createEmptyCircuit(): CircuitSnapshot {
   return {
-    powerOn: false,
+    powerOn: true,
     switches: Array(16).fill(0) as (0 | 1)[],
     clock: {
       mode: 'manual',

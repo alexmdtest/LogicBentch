@@ -4,6 +4,7 @@ import {
   DiagnosticIssue,
   ICInstanceRuntimeState,
   LogicLevel,
+  PlacedIC,
   SevenSegmentDigitState,
   SimulationSnapshot,
   TerminalId,
@@ -53,10 +54,16 @@ function createEmptyDisplayState(caLevel: LogicLevel = 'Z'): SevenSegmentDigitSt
   };
 }
 
+interface SequentialPreStepSnapshot {
+  flipFlopState?: ICInstanceRuntimeState['flipFlopState'];
+  prevClockState?: ICInstanceRuntimeState['prevClockState'];
+}
+
 /**
  * Stateful Digital Simulation Engine instance.
  * Preserves sequential flip-flop, counter, shift-register, and 6116 SRAM states
- * across simulation steps while supporting pure event-driven combinational propagation.
+ * across simulation steps while supporting pure event-driven combinational and
+ * multi-IC sequential propagation across all 5 ZIF sockets.
  */
 export class DigitalSimulationEngine {
   private simTimeNs = 0;
@@ -107,10 +114,8 @@ export class DigitalSimulationEngine {
           hasGnd: false,
           pinStates: {},
           internalMemory: placed.partNumber === '6116' ? new Uint8Array(2048) : undefined,
-          flipFlopState:
-            def?.category === 'sequential' ? {} : undefined,
-          prevClockState:
-            def?.category === 'sequential' ? {} : undefined,
+          flipFlopState: def?.category === 'sequential' ? {} : undefined,
+          prevClockState: def?.category === 'sequential' ? {} : undefined,
         });
       }
     }
@@ -127,6 +132,7 @@ export class DigitalSimulationEngine {
 
     // Trainer fixed source drivers
     const fixedNetDrivers = new Map<string, LogicLevel[]>();
+    const switchNetDrivers = new Map<string, LogicLevel[]>();
     const addFixedDriver = (terminal: TerminalId, val: LogicLevel) => {
       const netId = netlist.getNetId(terminal);
       let arr = fixedNetDrivers.get(netId);
@@ -142,7 +148,13 @@ export class DigitalSimulationEngine {
       addFixedDriver('PWR:GND:0', 0);
 
       for (let i = 0; i < 16; i++) {
-        addFixedDriver(`SW:${i}`, circuit.switches[i] ?? 0);
+        const netId = netlist.getNetId(`SW:${i}`);
+        let arr = switchNetDrivers.get(netId);
+        if (!arr) {
+          arr = [];
+          switchNetDrivers.set(netId, arr);
+        }
+        arr.push(circuit.switches[i] ?? 0);
       }
       addFixedDriver('CLK:OUT', circuit.clock.level);
       addFixedDriver('CLK:OUT_N', circuit.clock.level === 1 ? 0 : 1);
@@ -150,29 +162,28 @@ export class DigitalSimulationEngine {
     }
 
     // Detect direct +5V to GND short before evaluating ICs
-    if (circuit.powerOn) {
-      const vccNet = netlist.getNetId('PWR:+5V:0');
-      const gndNet = netlist.getNetId('PWR:GND:0');
-      if (vccNet === gndNet) {
-        diagnostics.push({
-          id: 'power-short',
-          severity: 'error',
-          code: 'POWER_SHORT',
-          title: 'Direct +5V to GND Short Circuit',
-          detail: 'The +5V supply rail is electrically shorted to GND. Remove the shorting wire immediately.',
-        });
-      }
-    }
-
-    // Resolve power status for each placed IC using trainer supply nets
     const vccNetId = netlist.getNetId('PWR:+5V:0');
     const gndNetId = netlist.getNetId('PWR:GND:0');
 
+    if (circuit.powerOn && vccNetId === gndNetId) {
+      diagnostics.push({
+        id: 'power-short',
+        severity: 'error',
+        code: 'POWER_SHORT',
+        title: 'Direct +5V to GND Short Circuit',
+        detail: 'The +5V supply rail is electrically shorted to GND. Remove the shorting wire immediately.',
+      });
+    }
+
+    // Resolve power status for each placed IC.
+    // ZIF sockets (ZIF1..ZIF5) integrate internal +5V and GND supply routing automatically
+    // when Main Trainer Power is ON, unless the user explicitly shorts/reverses polarity on the pins.
     for (const placed of circuit.placedICs) {
       const def = getICDefinition(placed.partNumber);
       const rt = this.icRuntime.get(placed.instanceId)!;
       if (!def) continue;
 
+      const isZifSocket = placed.placement.kind === 'zif';
       let hasVcc = false;
       let hasGnd = false;
       let reversed = false;
@@ -183,11 +194,19 @@ export class DigitalSimulationEngine {
           if (!term) continue;
           const pinNet = netlist.getNetId(term);
           if (pin.direction === 'power-vcc') {
-            if (pinNet === vccNetId) hasVcc = true;
-            if (pinNet === gndNetId) reversed = true;
+            if (pinNet === gndNetId) {
+              reversed = true;
+            } else if (pinNet === vccNetId || isZifSocket) {
+              hasVcc = true;
+              addFixedDriver(term, 1);
+            }
           } else if (pin.direction === 'power-gnd') {
-            if (pinNet === gndNetId) hasGnd = true;
-            if (pinNet === vccNetId) reversed = true;
+            if (pinNet === vccNetId) {
+              reversed = true;
+            } else if (pinNet === gndNetId || isZifSocket) {
+              hasGnd = true;
+              addFixedDriver(term, 0);
+            }
           }
         }
       }
@@ -239,6 +258,38 @@ export class DigitalSimulationEngine {
       }
     }
 
+    // Identify 6116 bidirectional I/O nets so input switches wired to 6116 I/O0..I/O7
+    // only drive the bus during an active Write cycle (~CS=0 and ~WR=0).
+    const sramIOOwnerByNet = new Map<string, PlacedIC[]>();
+    const sramIOPins = [9, 10, 11, 13, 14, 15, 16, 17];
+    for (const placed of circuit.placedICs) {
+      if (placed.partNumber !== '6116') continue;
+      const rt = this.icRuntime.get(placed.instanceId);
+      if (!rt?.powered) continue;
+      for (const ioPin of sramIOPins) {
+        const term = getICPinTerminalId(placed, ioPin);
+        if (!term) continue;
+        const netId = netlist.getNetId(term);
+        let list = sramIOOwnerByNet.get(netId);
+        if (!list) {
+          list = [];
+          sramIOOwnerByNet.set(netId, list);
+        }
+        list.push(placed);
+      }
+    }
+
+    // Snapshot pre-step sequential state for each placed IC so multi-IC cascades
+    // evaluate clock transitions against the true pre-step state across delta cycles.
+    const preStepSequential = new Map<string, SequentialPreStepSnapshot>();
+    for (const placed of circuit.placedICs) {
+      const rt = this.icRuntime.get(placed.instanceId)!;
+      preStepSequential.set(placed.instanceId, {
+        flipFlopState: rt.flipFlopState ? { ...rt.flipFlopState } : undefined,
+        prevClockState: rt.prevClockState ? { ...rt.prevClockState } : undefined,
+      });
+    }
+
     // Track per-IC driven pin states across delta cycles (seeded from previous step's steady outputs)
     const icDrivenByInstance = new Map<string, Record<number, LogicLevel>>();
     for (const placed of circuit.placedICs) {
@@ -247,42 +298,77 @@ export class DigitalSimulationEngine {
         icDrivenByInstance.set(placed.instanceId, { ...prev });
       }
     }
-    const netValues = new Map<string, LogicLevel>();
 
-    const recomputeNets = () => {
-      netValues.clear();
-      const allNetDrivers = new Map<string, LogicLevel[]>();
+    // Helper to check if a net is a 6116 bidirectional I/O net whose 6116 is NOT in active Write mode (~CS=0, ~WR=0)
+    const isSwitchActiveOnNet = (netId: string, allowRawControlLookup = false): boolean => {
+      const owners = sramIOOwnerByNet.get(netId);
+      if (!owners || owners.length === 0) return true;
+      if (allowRawControlLookup) return false;
+      // Switch drives the 6116 I/O net ONLY if at least one connected 6116 has ~CS=0 (Pin 18) and ~WR=0 (Pin 21)
+      return owners.some((sramIC) => {
+        const csTerm = getICPinTerminalId(sramIC, 18);
+        const wrTerm = getICPinTerminalId(sramIC, 21);
+        const csNet = csTerm ? netlist.getNetId(csTerm) : null;
+        const wrNet = wrTerm ? netlist.getNetId(wrTerm) : null;
+        const csVal = csNet ? resolveControlNet(sramIC.instanceId, 18, csNet) : 1;
+        const wrVal = wrNet ? resolveControlNet(sramIC.instanceId, 21, wrNet) : 1;
+        return csVal === 0 && wrVal === 0;
+      });
+    };
 
-      for (const [netId, list] of fixedNetDrivers.entries()) {
-        allNetDrivers.set(netId, [...list]);
-      }
-
-      for (const placed of circuit.placedICs) {
-        const driven = icDrivenByInstance.get(placed.instanceId);
+    const resolveControlNet = (targetInstanceId: string, targetPin: number, netId: string): LogicLevel => {
+      const drivers: LogicLevel[] = [];
+      const fixed = fixedNetDrivers.get(netId);
+      if (fixed) drivers.push(...fixed);
+      const sw = switchNetDrivers.get(netId);
+      if (sw) drivers.push(...sw);
+      for (const other of circuit.placedICs) {
+        const driven = icDrivenByInstance.get(other.instanceId);
         if (!driven) continue;
         for (const [pinStr, val] of Object.entries(driven)) {
           if (val === 'Z') continue;
-          const term = getICPinTerminalId(placed, Number(pinStr));
-          if (!term) continue;
-          const netId = netlist.getNetId(term);
-          let arr = allNetDrivers.get(netId);
-          if (!arr) {
-            arr = [];
-            allNetDrivers.set(netId, arr);
+          const pinNum = Number(pinStr);
+          if (other.instanceId === targetInstanceId && pinNum === targetPin) continue;
+          const term = getICPinTerminalId(other, pinNum);
+          if (term && netlist.getNetId(term) === netId) {
+            drivers.push(val);
           }
-          arr.push(val);
         }
       }
-
-      for (const [netId, drivers] of allNetDrivers.entries()) {
-        netValues.set(netId, resolveDrivers(drivers));
-      }
+      return resolveDrivers(drivers);
     };
 
-    // Initial net state from fixed sources
-    recomputeNets();
+    // Helper to resolve the logic level seen by a specific IC pin (excluding only that exact pin driving itself)
+    const resolvePinInput = (targetInstanceId: string, targetPin: number, netId: string): LogicLevel => {
+      const drivers: LogicLevel[] = [];
+      const fixed = fixedNetDrivers.get(netId);
+      if (fixed) {
+        drivers.push(...fixed);
+      }
+      const sw = switchNetDrivers.get(netId);
+      if (sw && isSwitchActiveOnNet(netId)) {
+        drivers.push(...sw);
+      }
+      for (const other of circuit.placedICs) {
+        const driven = icDrivenByInstance.get(other.instanceId);
+        if (!driven) continue;
+        for (const [pinStr, val] of Object.entries(driven)) {
+          if (val === 'Z') continue;
+          const pinNum = Number(pinStr);
+          if (other.instanceId === targetInstanceId && pinNum === targetPin) {
+            continue;
+          }
+          const term = getICPinTerminalId(other, pinNum);
+          if (!term) continue;
+          if (netlist.getNetId(term) === netId) {
+            drivers.push(val);
+          }
+        }
+      }
+      return resolveDrivers(drivers);
+    };
 
-    // Iterative event-driven propagation (combinational settling + sequential edge commit on cycle 0)
+    // Iterative event-driven propagation across all placed ICs
     const MAX_DELTA_CYCLES = 16;
     let settled = false;
     let deltaCount = 0;
@@ -296,19 +382,29 @@ export class DigitalSimulationEngine {
         const rt = this.icRuntime.get(placed.instanceId)!;
         if (!def) continue;
 
+        // Restore pre-step sequential state before evaluating this IC on the current delta cycle
+        const seqSnap = preStepSequential.get(placed.instanceId);
+        if (seqSnap) {
+          if (seqSnap.flipFlopState) {
+            rt.flipFlopState = { ...seqSnap.flipFlopState };
+          }
+          if (seqSnap.prevClockState) {
+            rt.prevClockState = { ...seqSnap.prevClockState };
+          }
+        }
+
         const pinInputs: Record<number, LogicLevel> = {};
         for (const pin of def.pins) {
           const term = getICPinTerminalId(placed, pin.pin);
           if (!term) continue;
           const netId = netlist.getNetId(term);
-          pinInputs[pin.pin] = netValues.get(netId) ?? 'Z';
+          pinInputs[pin.pin] = resolvePinInput(placed.instanceId, pin.pin, netId);
         }
 
         const evalRes = evaluateIC({
           partNumber: placed.partNumber,
           pinInputs,
           runtime: rt,
-          // Edge-triggered detectors guard against re-triggering via prevClockState
           commitSequential: true,
         });
 
@@ -328,11 +424,51 @@ export class DigitalSimulationEngine {
         icDrivenByInstance.set(placed.instanceId, nextDriven);
       }
 
-      recomputeNets();
       if (!changed) {
         settled = true;
         break;
       }
+    }
+
+    // Merge active switch drivers into fixedNetDrivers for final global net and conflict calculation
+    for (const [netId, swList] of switchNetDrivers.entries()) {
+      if (isSwitchActiveOnNet(netId)) {
+        let arr = fixedNetDrivers.get(netId);
+        if (!arr) {
+          arr = [];
+          fixedNetDrivers.set(netId, arr);
+        }
+        arr.push(...swList);
+      }
+    }
+
+    // Compute final global net values from settled fixed + IC drivers
+    const netValues = new Map<string, LogicLevel>();
+    const allNetDrivers = new Map<string, LogicLevel[]>();
+
+    for (const [netId, list] of fixedNetDrivers.entries()) {
+      allNetDrivers.set(netId, [...list]);
+    }
+
+    for (const placed of circuit.placedICs) {
+      const driven = icDrivenByInstance.get(placed.instanceId);
+      if (!driven) continue;
+      for (const [pinStr, val] of Object.entries(driven)) {
+        if (val === 'Z') continue;
+        const term = getICPinTerminalId(placed, Number(pinStr));
+        if (!term) continue;
+        const netId = netlist.getNetId(term);
+        let arr = allNetDrivers.get(netId);
+        if (!arr) {
+          arr = [];
+          allNetDrivers.set(netId, arr);
+        }
+        arr.push(val);
+      }
+    }
+
+    for (const [netId, drivers] of allNetDrivers.entries()) {
+      netValues.set(netId, resolveDrivers(drivers));
     }
 
     // Persist steady-state driven IC outputs for next step's pre-edge reference
@@ -403,7 +539,6 @@ export class DigitalSimulationEngine {
         }
 
         if (pin.direction === 'input' && val === 'Z') {
-          // Only report floating input if connected to something or on CMOS or if other pins on IC are wired
           if (def.family === 'CMOS' || hasAnySignalWire) {
             floatingInputNames.push(`${pin.pin}:${pin.name}`);
           }
@@ -416,7 +551,7 @@ export class DigitalSimulationEngine {
           severity: 'info',
           code: 'UNCONNECTED_IC',
           title: `${placed.partNumber}: No Signal Connections`,
-          detail: `${placed.partNumber} is powered but has no input or output signal wires connected.`,
+          detail: `${placed.partNumber} is powered by its ZIF socket but has no input or output signal wires connected.`,
           targetId: placed.instanceId,
         });
       } else if (circuit.powerOn && rt.powered && floatingInputNames.length > 0) {
@@ -425,18 +560,18 @@ export class DigitalSimulationEngine {
           id: `float-${placed.instanceId}`,
           severity: isCmos ? 'warning' : 'info',
           code: isCmos ? 'CMOS_FLOATING_INPUT' : 'FLOATING_INPUT',
-          title: `${placed.partNumber}: Floating ${isCmos ? 'CMOS ' : ''}Input${floatingInputNames.length > 1 ? 's' : ''}`,
-          detail: `Unconnected input pin(s): ${floatingInputNames.slice(0, 6).join(', ')}${floatingInputNames.length > 6 ? ` (+${floatingInputNames.length - 6} more)` : ''}. Tie unused inputs to +5V or GND.`,
+          title: `${placed.partNumber}: Unconnected ${isCmos ? 'CMOS ' : ''}Input${floatingInputNames.length > 1 ? 's' : ''}`,
+          detail: `Unconnected input pin(s): ${floatingInputNames.slice(0, 6).join(', ')}${floatingInputNames.length > 6 ? ` (+${floatingInputNames.length - 6} more)` : ''}.`,
           targetId: placed.instanceId,
         });
       }
     }
 
-    // Check driver conflicts (0 vs 1 on same net)
+    // Check driver conflicts (0 vs 1 on same net, excluding redundant +5V/GND supplies)
     for (const [netId, drivers] of netDriversMap.entries()) {
       const has0 = drivers.some((d) => d.level === 0);
       const has1 = drivers.some((d) => d.level === 1);
-      if (has0 && has1 && netId !== netlist.getNetId('PWR:+5V:0')) {
+      if (has0 && has1 && netId !== vccNetId) {
         diagnostics.push({
           id: `conflict-${netId}`,
           severity: 'error',
@@ -461,30 +596,32 @@ export class DigitalSimulationEngine {
 
     // Compute onboard LTS542 Common-Anode 7-segment display states
     const evalDisplay = (dispId: 'DISP1' | 'DISP2'): SevenSegmentDigitState => {
-      const caLevel = terminalStates[`${dispId}:CA`] ?? 'Z';
-      const state = createEmptyDisplayState(caLevel);
+      const rawCa = terminalStates[`${dispId}:CA`] ?? 'Z';
+      // Onboard LTS542 display module has internal +5V common-anode bias unless CA is explicitly driven LOW (0)
+      const effectiveCa: LogicLevel = circuit.powerOn ? (rawCa === 'Z' ? 1 : rawCa) : 'Z';
+      const state = createEmptyDisplayState(effectiveCa);
       const segKeys = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'dp'] as const;
-      let anyActiveHighWhenNoCA = false;
+      let anyDrivenWhenCaLow = false;
 
       for (const s of segKeys) {
         const lvl = terminalStates[`${dispId}:${s}`] ?? 'Z';
         state.pinLevels[s] = lvl;
         // Common-anode LTS542: illuminates when CA == 1 (+5V) and segment cathode == 0 (LOW)
-        if (circuit.powerOn && caLevel === 1 && lvl === 0) {
+        if (circuit.powerOn && effectiveCa === 1 && lvl === 0) {
           state.segments[s] = true;
         }
-        if (lvl !== 'Z' && caLevel !== 1) {
-          anyActiveHighWhenNoCA = true;
+        if (lvl !== 'Z' && rawCa === 0) {
+          anyDrivenWhenCaLow = true;
         }
       }
 
-      if (circuit.powerOn && anyActiveHighWhenNoCA) {
+      if (circuit.powerOn && anyDrivenWhenCaLow) {
         diagnostics.push({
           id: `disp-ca-${dispId}`,
           severity: 'warning',
           code: 'DISPLAY_POLARITY',
-          title: `${dispId}: Missing Common Anode (+5V)`,
-          detail: `${dispId} has segment wires connected, but ${dispId}:CA is not connected to +5V. Connect CA to +5V for common-anode operation.`,
+          title: `${dispId}: Common Anode Grounded`,
+          detail: `${dispId}:CA is connected to GND (0V). Connect CA to +5V (or leave on internal +5V anode pull-up) for common-anode operation.`,
           targetId: dispId,
         });
       }

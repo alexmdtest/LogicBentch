@@ -251,3 +251,233 @@ export function buildNetlist(wires: Wire[]): NetlistResult {
     allTerminals,
   };
 }
+
+export type WireConnectionCategory =
+  | 'INTER-GATE'
+  | 'INTER-IC'
+  | 'EXT-IN'
+  | 'EXT-OUT'
+  | 'EXT-LINK';
+
+export interface WireClassificationInfo {
+  category: WireConnectionCategory;
+  categoryLabel: string;
+  shortTag: string;
+  fromFormatted: string;
+  toFormatted: string;
+  summary: string;
+}
+
+export function formatDirectionTag(dir: string | null): 'IN' | 'OUT' | 'I/O' | 'VCC' | 'GND' | 'NC' {
+  if (dir === 'power-vcc') return 'VCC';
+  if (dir === 'power-gnd') return 'GND';
+  if (dir === 'output' || dir === 'open-collector') return 'OUT';
+  if (dir === 'bidirectional') return 'I/O';
+  if (dir === 'nc') return 'NC';
+  return 'IN';
+}
+
+export function describeTerminalEndpoint(
+  terminalId: TerminalId,
+  placedICs: PlacedIC[]
+): {
+  shortLabel: string;
+  fullLabel: string;
+  directionTag: 'IN' | 'OUT' | 'I/O' | 'VCC' | 'GND' | 'NC';
+  socketId: string | null;
+  icPinName: string | null;
+} {
+  if (terminalId.startsWith('ZIF')) {
+    const [sock, pinStr] = terminalId.split(':');
+    const physPin = Number(pinStr);
+    const info = getDisplayedZifPinInfo(
+      sock as 'ZIF1' | 'ZIF2' | 'ZIF3' | 'ZIF4' | 'ZIF5',
+      physPin,
+      placedICs
+    );
+    const shortSock = sock.replace('ZIF', 'Z');
+    const dirTag = formatDirectionTag(info.icPinDirection);
+    if (info.icPinName && info.displayedPin !== 'NC') {
+      return {
+        shortLabel: `${shortSock}:${info.icPinName}(${dirTag})`,
+        fullLabel: `${sock}:Pin ${info.displayedPin} [${info.icPinName} ${dirTag}]`,
+        directionTag: dirTag,
+        socketId: sock,
+        icPinName: info.icPinName,
+      };
+    }
+    return {
+      shortLabel: `${shortSock}:P${info.displayedPin}`,
+      fullLabel: `${sock}:Pin ${info.displayedPin}`,
+      directionTag: dirTag,
+      socketId: sock,
+      icPinName: null,
+    };
+  }
+
+  if (terminalId.startsWith('SW:')) {
+    const idx = terminalId.split(':')[1];
+    return {
+      shortLabel: `SW${idx}(IN)`,
+      fullLabel: `SW${idx} (Ext Input)`,
+      directionTag: 'IN',
+      socketId: null,
+      icPinName: null,
+    };
+  }
+
+  if (terminalId.startsWith('LED:')) {
+    const idx = terminalId.split(':')[1];
+    return {
+      shortLabel: `L${idx}(OUT)`,
+      fullLabel: `L${idx} (Ext Output)`,
+      directionTag: 'OUT',
+      socketId: null,
+      icPinName: null,
+    };
+  }
+
+  if (terminalId.startsWith('DISP1:') || terminalId.startsWith('DISP2:')) {
+    const [, seg] = terminalId.split(':');
+    return {
+      shortLabel: `7SEG:${seg}(OUT)`,
+      fullLabel: `7-Seg ${seg} (Ext Output)`,
+      directionTag: 'OUT',
+      socketId: null,
+      icPinName: null,
+    };
+  }
+
+  if (terminalId === 'CLK:OUT') {
+    return {
+      shortLabel: 'CLK(IN)',
+      fullLabel: 'CLK (Clock Source)',
+      directionTag: 'IN',
+      socketId: null,
+      icPinName: null,
+    };
+  }
+  if (terminalId === 'CLK:OUT_N') {
+    return {
+      shortLabel: '~CLK(IN)',
+      fullLabel: '~CLK (Inv Clock)',
+      directionTag: 'IN',
+      socketId: null,
+      icPinName: null,
+    };
+  }
+  if (terminalId === 'PULSE:OUT') {
+    return {
+      shortLabel: 'PLS(IN)',
+      fullLabel: 'PULSE (Pulse Gen)',
+      directionTag: 'IN',
+      socketId: null,
+      icPinName: null,
+    };
+  }
+  if (terminalId.startsWith('PWR:+5V:')) {
+    return {
+      shortLabel: '+5V(VCC)',
+      fullLabel: '+5V Supply',
+      directionTag: 'VCC',
+      socketId: null,
+      icPinName: null,
+    };
+  }
+  if (terminalId.startsWith('PWR:GND:')) {
+    return {
+      shortLabel: 'GND',
+      fullLabel: 'GND (0V)',
+      directionTag: 'GND',
+      socketId: null,
+      icPinName: null,
+    };
+  }
+
+  return {
+    shortLabel: terminalId,
+    fullLabel: terminalId,
+    directionTag: 'IN',
+    socketId: null,
+    icPinName: null,
+  };
+}
+
+export function classifyWireConnection(
+  wire: Wire,
+  placedICs: PlacedIC[]
+): WireClassificationInfo {
+  const a = describeTerminalEndpoint(wire.from, placedICs);
+  const b = describeTerminalEndpoint(wire.to, placedICs);
+
+  let category: WireConnectionCategory = 'EXT-LINK';
+  let categoryLabel = 'External Link';
+
+  if (a.socketId && b.socketId) {
+    if (a.socketId === b.socketId) {
+      category = 'INTER-GATE';
+      categoryLabel = 'Inter-Gate (Intra-IC)';
+    } else {
+      category = 'INTER-IC';
+      categoryLabel = 'Inter-IC Gate Link';
+    }
+  } else if (a.socketId || b.socketId) {
+    const extEnd = a.socketId ? b : a;
+    if (extEnd.directionTag === 'OUT') {
+      category = 'EXT-OUT';
+      categoryLabel = 'Gate Out → Ext Output';
+    } else {
+      category = 'EXT-IN';
+      categoryLabel = 'Ext Input → Gate In';
+    }
+  }
+
+  return {
+    category,
+    categoryLabel,
+    shortTag: `${category}: ${a.shortLabel}→${b.shortLabel}`,
+    fromFormatted: a.fullLabel,
+    toFormatted: b.fullLabel,
+    summary: `${a.fullLabel} → ${b.fullLabel}`,
+  };
+}
+
+export interface TerminalConnectionCallout {
+  badgeText: string;
+  directionTag: 'IN' | 'OUT' | 'I/O' | 'VCC' | 'GND' | 'NC';
+  category: WireConnectionCategory;
+  peerCount: number;
+  tooltipSummary: string;
+}
+
+/**
+ * Returns the connected pin label and direction to display directly at a connected terminal
+ * on the trainer board (e.g., on SW0..15, L0..15, DISP1, CLK, or ZIF pins).
+ */
+export function getTerminalConnectionCallout(
+  terminalId: TerminalId,
+  wires: Wire[],
+  placedICs: PlacedIC[]
+): TerminalConnectionCallout | null {
+  const connectedWires = wires.filter((w) => w.from === terminalId || w.to === terminalId);
+  if (connectedWires.length === 0) return null;
+
+  const peers = connectedWires.map((w) => {
+    const peerId = w.from === terminalId ? w.to : w.from;
+    const ep = describeTerminalEndpoint(peerId, placedICs);
+    const cls = classifyWireConnection(w, placedICs);
+    return { peerId, ep, cls };
+  });
+
+  const primary = peers[0];
+  const extra = peers.length > 1 ? `+${peers.length - 1}` : '';
+
+  return {
+    badgeText: `${primary.ep.shortLabel}${extra}`,
+    directionTag: primary.ep.directionTag,
+    category: primary.cls.category,
+    peerCount: peers.length,
+    tooltipSummary: peers.map((p) => `${p.cls.categoryLabel}: ${p.ep.fullLabel}`).join(' | '),
+  };
+}
+

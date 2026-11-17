@@ -15,11 +15,17 @@ import {
   X,
 } from 'lucide-react';
 import { canInsertIntoZif, getAllICDefinitions, getICDefinition } from '../ic-library';
-import { getDisplayedZifPinInfo } from '../simulation/netlist';
+import {
+  classifyWireConnection,
+  describeTerminalEndpoint,
+  formatDirectionTag,
+  getDisplayedZifPinInfo,
+} from '../simulation/netlist';
 import { serializeProject } from '../storage/projectStorage';
 import { useLabStore } from '../store/useLabStore';
 import { WIRE_COLOR_HEX } from '../trainer/boardLayout';
 import { PlacedIC, WireColor, ZIFSocketId } from '../types/circuit';
+import { ICInternalDiagram } from './ICInternalDiagram';
 import { TrainerBoardSVG } from './TrainerBoardSVG';
 
 function formatTerminalDisplay(terminalId: string, placedICs: PlacedIC[]): string {
@@ -36,7 +42,8 @@ function formatTerminalDisplay(terminalId: string, placedICs: PlacedIC[]): strin
     const physPin = Number(pinStr);
     const info = getDisplayedZifPinInfo(sock as ZIFSocketId, physPin, placedICs);
     if (info.icPinName) {
-      return `${sock}:Pin ${info.displayedPin} (${info.icPinName})`;
+      const dirTag = formatDirectionTag(info.icPinDirection);
+      return `${sock}:Pin ${info.displayedPin} (${info.icPinName} · ${dirTag})`;
     }
     return `${sock}:Pin ${info.displayedPin}`;
   }
@@ -52,17 +59,21 @@ export const TrainerWorkspace: React.FC = () => {
   const selectedWireColor = useLabStore((s) => s.selectedWireColor);
   const wiringFrom = useLabStore((s) => s.wiringFrom);
   const selectedWireId = useLabStore((s) => s.selectedWireId);
+  const selectedWireIds = useLabStore((s) => s.selectedWireIds);
   const pendingInsertIC = useLabStore((s) => s.pendingInsertIC);
   const selectedICInstanceId = useLabStore((s) => s.selectedICInstanceId);
   const placementError = useLabStore((s) => s.placementError);
 
   const setSelectedWireColor = useLabStore((s) => s.setSelectedWireColor);
+  const setSelectedWireIds = useLabStore((s) => s.setSelectedWireIds);
+  const toggleSelectedWireId = useLabStore((s) => s.toggleSelectedWireId);
   const setPendingInsertIC = useLabStore((s) => s.setPendingInsertIC);
   const clearPlacementError = useLabStore((s) => s.clearPlacementError);
   const cancelWiring = useLabStore((s) => s.cancelWiring);
   const insertIC = useLabStore((s) => s.insertIC);
   const removeIC = useLabStore((s) => s.removeIC);
   const removeWire = useLabStore((s) => s.removeWire);
+  const removeWires = useLabStore((s) => s.removeWires);
   const undo = useLabStore((s) => s.undo);
   const redo = useLabStore((s) => s.redo);
   const resetCircuit = useLabStore((s) => s.resetCircuit);
@@ -81,24 +92,54 @@ export const TrainerWorkspace: React.FC = () => {
     'diagnostics'
   );
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
+  const [showResetConfirmModal, setShowResetConfirmModal] = useState(false);
 
   const allICs = getAllICDefinitions();
   const { circuit } = project;
 
-  // Escape key cancels active patch cord routing or pending IC placement
+  // Escape key cancels active patch cord routing, pending IC placement, or reset confirmation popup;
+  // Delete / Backspace deletes all selected wires
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isEditable =
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable);
+
       if (e.key === 'Escape') {
         cancelWiring();
         setPendingInsertIC(null);
-      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+        setShowResetConfirmModal(false);
+        setSelectedWireIds([]);
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && !isEditable) {
+        if (selectedWireIds.length > 0) {
+          e.preventDefault();
+          removeWires(selectedWireIds);
+        } else if (selectedWireId) {
+          e.preventDefault();
+          removeWire(selectedWireId);
+        }
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !isEditable) {
         if (e.shiftKey) redo();
         else undo();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [cancelWiring, setPendingInsertIC, undo, redo]);
+  }, [
+    cancelWiring,
+    setPendingInsertIC,
+    setSelectedWireIds,
+    selectedWireIds,
+    selectedWireId,
+    removeWires,
+    removeWire,
+    undo,
+    redo,
+  ]);
 
   // Automatic Clock Generator Timer (respects frequencyHz & dutyCyclePercent)
   useEffect(() => {
@@ -300,7 +341,7 @@ export const TrainerWorkspace: React.FC = () => {
           </button>
           <button
             type="button"
-            onClick={resetCircuit}
+            onClick={() => setShowResetConfirmModal(true)}
             aria-label="Reset trainer circuit"
             title="Reset Trainer Circuit"
             className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium bg-[#F1F0EB] border border-[#B8B8B1] rounded text-[#20252B] hover:bg-[#DAD9D3] whitespace-nowrap cursor-pointer"
@@ -320,7 +361,11 @@ export const TrainerWorkspace: React.FC = () => {
       </div>
 
       {/* Contextual Status Banners */}
-      {(wiringFrom || pendingInsertIC || placementError || selectedWireId) && (
+      {(wiringFrom ||
+        pendingInsertIC ||
+        placementError ||
+        selectedWireIds.length > 0 ||
+        selectedWireId) && (
         <div className="bg-[#303840] text-[#F1F0EB] px-4 py-1.5 text-xs flex items-center justify-between gap-4 border-b border-[#20252B] shrink-0">
           <div className="flex items-center gap-3 font-mono">
             {wiringFrom && (
@@ -337,21 +382,43 @@ export const TrainerWorkspace: React.FC = () => {
               </span>
             )}
             {placementError && <span className="text-[#E8A45C]">{placementError}</span>}
-            {selectedWireId && !wiringFrom && !placementError && (
+            {(selectedWireIds.length > 0 || selectedWireId) && !wiringFrom && !placementError && (
               <span>
-                Wire selected — drag white midpoint handle to route around labels, or click Delete.
+                {selectedWireIds.length > 1
+                  ? `${selectedWireIds.length} patch cords selected (marquee drag or Shift+Click) — press Delete/Backspace or click Delete Selected.`
+                  : 'Patch cord selected — drag from any point on the wire to curve around labels, Shift+Click or drag box to multi-select, or press Delete.'}
               </span>
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {selectedWireId && (
-              <button
-                type="button"
-                onClick={() => removeWire(selectedWireId)}
-                className="px-2 py-0.5 text-xs bg-[#B83A32] text-white rounded cursor-pointer"
-              >
-                Delete Wire
-              </button>
+            {(selectedWireIds.length > 0 || selectedWireId) && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setSelectedWireIds([])}
+                  className="px-2 py-0.5 text-xs bg-[#414B56] text-[#F1F0EB] rounded hover:bg-[#525E6B] cursor-pointer"
+                >
+                  Clear Selection
+                </button>
+                <button
+                  type="button"
+                  data-testid="banner-delete-selected-wires"
+                  onClick={() =>
+                    removeWires(
+                      selectedWireIds.length > 0
+                        ? selectedWireIds
+                        : selectedWireId
+                        ? [selectedWireId]
+                        : []
+                    )
+                  }
+                  className="px-2.5 py-0.5 text-xs font-semibold bg-[#B83A32] text-white rounded hover:bg-[#9E2F28] cursor-pointer"
+                >
+                  {selectedWireIds.length > 1
+                    ? `Delete ${selectedWireIds.length} Wires`
+                    : 'Delete Wire'}
+                </button>
+              </>
             )}
             {(wiringFrom || pendingInsertIC || placementError) && (
               <button
@@ -611,39 +678,57 @@ export const TrainerWorkspace: React.FC = () => {
                       </div>
 
                       {inspectedIC && inspectedICDef && (
-                        <div className="bg-[#F1F0EB] border border-[#C9C9C3] rounded overflow-hidden">
-                          <div className="px-3 py-2 bg-[#DAD9D3] border-b border-[#C9C9C3] text-xs font-mono font-semibold">
-                            {inspectedICDef.partNumber} Live Pin States
+                        <>
+                          <div className="bg-[#F1F0EB] border border-[#C9C9C3] rounded overflow-hidden">
+                            <div className="px-3 py-2 bg-[#DAD9D3] border-b border-[#C9C9C3] text-xs font-mono font-semibold">
+                              {inspectedICDef.partNumber} Internal Logic Structure
+                            </div>
+                            <div className="p-2">
+                              <ICInternalDiagram
+                                ic={inspectedICDef}
+                                pinStates={inspectedICRt?.pinStates}
+                                compact
+                              />
+                            </div>
                           </div>
-                          <div className="max-h-64 overflow-y-auto divide-y divide-[#E5E5E1]">
-                            {inspectedICDef.pins.map((pin) => {
-                              const lvl = inspectedICRt?.pinStates[pin.pin] ?? 'Z';
-                              return (
-                                <div
-                                  key={pin.pin}
-                                  className="px-3 py-1 flex items-center justify-between text-[11px] font-mono"
-                                >
-                                  <span>
-                                    {pin.pin}. {pin.name}
-                                  </span>
-                                  <span
-                                    className={`px-1.5 py-0.5 rounded font-semibold ${
-                                      lvl === 1
-                                        ? 'bg-[#587965]/20 text-[#3B5746]'
-                                        : lvl === 0
-                                        ? 'bg-[#20252B]/10 text-[#20252B]'
-                                        : lvl === 'X'
-                                        ? 'bg-[#BD8B43]/20 text-[#8A6124]'
-                                        : 'text-[#747C82]'
-                                    }`}
+
+                          <div className="bg-[#F1F0EB] border border-[#C9C9C3] rounded overflow-hidden">
+                            <div className="px-3 py-2 bg-[#DAD9D3] border-b border-[#C9C9C3] text-xs font-mono font-semibold">
+                              {inspectedICDef.partNumber} Live Pin States
+                            </div>
+                            <div className="max-h-52 overflow-y-auto divide-y divide-[#E5E5E1]">
+                              {inspectedICDef.pins.map((pin) => {
+                                const lvl = inspectedICRt?.pinStates[pin.pin] ?? 'Z';
+                                return (
+                                  <div
+                                    key={pin.pin}
+                                    className="px-3 py-1 flex items-center justify-between text-[11px] font-mono"
                                   >
-                                    {String(lvl)}
-                                  </span>
-                                </div>
-                              );
-                            })}
+                                    <span>
+                                      {pin.pin}. {pin.name}{' '}
+                                      <span className="text-[10px] text-[#747C82]">
+                                        ({formatDirectionTag(pin.direction)})
+                                      </span>
+                                    </span>
+                                    <span
+                                      className={`px-1.5 py-0.5 rounded font-semibold ${
+                                        lvl === 1
+                                          ? 'bg-[#587965]/20 text-[#3B5746]'
+                                          : lvl === 0
+                                          ? 'bg-[#20252B]/10 text-[#20252B]'
+                                          : lvl === 'X'
+                                          ? 'bg-[#BD8B43]/20 text-[#8A6124]'
+                                          : 'text-[#747C82]'
+                                      }`}
+                                    >
+                                      {String(lvl)}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
                           </div>
-                        </div>
+                        </>
                       )}
 
                       {/* 6116 Memory Inspector */}
@@ -677,43 +762,99 @@ export const TrainerWorkspace: React.FC = () => {
                 </div>
               )}
 
-              {/* TAB 3: WIRES LIST */}
+              {/* TAB 3: WIRES LIST WITH MULTI-SELECT & CONNECTION CLASSIFICATION */}
               {inspectorTab === 'wires' && (
-                <div className="space-y-2">
+                <div className="space-y-2.5">
                   {circuit.wires.length === 0 ? (
                     <div className="bg-[#F1F0EB] border border-[#C9C9C3] rounded p-4 text-center text-xs text-[#747C82]">
                       Click any circular terminal socket on the trainer, then click a second
-                      terminal to route a patch cord.
+                      terminal to route a patch cord. You can also drag a selection box on the
+                      board to select and delete multiple wires at once.
                     </div>
                   ) : (
-                    circuit.wires.map((w) => {
-                      const fromLabel = formatTerminalDisplay(w.from, circuit.placedICs);
-                      const toLabel = formatTerminalDisplay(w.to, circuit.placedICs);
-                      return (
-                        <div
-                          key={w.id}
-                          className="bg-[#F1F0EB] border border-[#C9C9C3] rounded px-2.5 py-1.5 flex items-center justify-between gap-2 text-xs font-mono"
-                        >
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span
-                              className="w-2.5 h-2.5 rounded-full shrink-0"
-                              style={{ backgroundColor: WIRE_COLOR_HEX[w.color].stroke }}
-                            />
-                            <span className="truncate" title={`${fromLabel} → ${toLabel}`}>
-                              {fromLabel} → {toLabel}
-                            </span>
-                          </div>
+                    <>
+                      {/* Batch Selection & Multi-Delete Toolbar */}
+                      <div className="bg-[#F1F0EB] border border-[#C9C9C3] rounded p-2 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono">
+                        <div className="flex items-center gap-1.5">
                           <button
                             type="button"
-                            aria-label={`Disconnect ${w.from} to ${w.to}`}
-                            onClick={() => removeWire(w.id)}
-                            className="p-1 text-[#747C82] hover:text-[#B83A32] cursor-pointer"
+                            onClick={() => setSelectedWireIds(circuit.wires.map((w) => w.id))}
+                            className="px-2 py-0.5 rounded bg-[#E5E5E1] border border-[#B8B8B1] text-[#20252B] hover:border-[#456A83] cursor-pointer"
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
+                            Select All ({circuit.wires.length})
                           </button>
+                          {selectedWireIds.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => setSelectedWireIds([])}
+                              className="px-2 py-0.5 rounded bg-[#E5E5E1] border border-[#B8B8B1] text-[#555C62] hover:text-[#20252B] cursor-pointer"
+                            >
+                              Clear
+                            </button>
+                          )}
                         </div>
-                      );
-                    })
+                        <button
+                          type="button"
+                          data-testid="inspector-delete-selected-wires"
+                          disabled={selectedWireIds.length === 0}
+                          onClick={() => removeWires(selectedWireIds)}
+                          className="px-2 py-0.5 rounded bg-[#B83A32] text-white font-semibold hover:bg-[#9E2F28] disabled:opacity-35 disabled:cursor-not-allowed cursor-pointer"
+                        >
+                          Delete Selected ({selectedWireIds.length})
+                        </button>
+                      </div>
+
+                      <div className="text-[10px] font-mono text-[#555C62] leading-snug">
+                        Tip: Drag a box across patch cords on the trainer panel (or Shift+Click) to
+                        select multiple wires and press Delete.
+                      </div>
+
+                      {circuit.wires.map((w) => {
+                        const fromLabel = formatTerminalDisplay(w.from, circuit.placedICs);
+                        const toLabel = formatTerminalDisplay(w.to, circuit.placedICs);
+                        const isChecked =
+                          selectedWireIds.includes(w.id) || selectedWireId === w.id;
+
+                        return (
+                          <div
+                            key={w.id}
+                            className={`rounded border px-2.5 py-1.5 flex items-center justify-between gap-2 text-xs font-mono transition-colors ${
+                              isChecked
+                                ? 'bg-[#456A83]/15 border-[#456A83]'
+                                : 'bg-[#F1F0EB] border-[#C9C9C3]'
+                            }`}
+                          >
+                            <label className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={() => toggleSelectedWireId(w.id)}
+                                aria-label={`Select wire ${fromLabel} to ${toLabel}`}
+                                className="accent-[#456A83] cursor-pointer"
+                              />
+                              <span
+                                className="w-2.5 h-2.5 rounded-full shrink-0"
+                                style={{ backgroundColor: WIRE_COLOR_HEX[w.color].stroke }}
+                              />
+                              <span
+                                className="text-[11px] text-[#20252B] font-semibold truncate"
+                                title={`${fromLabel} → ${toLabel}`}
+                              >
+                                {fromLabel} → {toLabel}
+                              </span>
+                            </label>
+                            <button
+                              type="button"
+                              aria-label={`Disconnect ${w.from} to ${w.to}`}
+                              onClick={() => removeWire(w.id)}
+                              className="p-1 text-[#747C82] hover:text-[#B83A32] shrink-0 cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </>
                   )}
                 </div>
               )}
@@ -802,6 +943,78 @@ export const TrainerWorkspace: React.FC = () => {
           </aside>
         )}
       </div>
+
+      {/* Reset Caution Confirmation Modal Popup */}
+      {showResetConfirmModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="reset-caution-title"
+          data-testid="reset-confirm-modal"
+          className="fixed inset-0 z-50 bg-[#181C20]/65 flex items-center justify-center p-4"
+          onClick={() => setShowResetConfirmModal(false)}
+        >
+          <div
+            className="bg-[#F1F0EB] border-2 border-[#303840] rounded-md shadow-xl max-w-md w-full overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="bg-[#303840] text-[#F1F0EB] px-4 py-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-[#E8A45C]" />
+                <h2 id="reset-caution-title" className="text-sm font-semibold font-mono">
+                  CAUTION — RESET TRAINER KIT
+                </h2>
+              </div>
+              <button
+                type="button"
+                aria-label="Close reset confirmation popup"
+                onClick={() => setShowResetConfirmModal(false)}
+                className="text-[#A5ACB2] hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-3 text-xs text-[#303840]">
+              <p className="leading-relaxed">
+                Are you sure you want to reset the <strong>DT-1004 Digital Trainer Kit</strong>? This
+                action will clear all inserted ICs from sockets <strong>ZIF-1..ZIF-5</strong>,
+                disconnect all patch cords, and return all input switches and clock generators to
+                their default laboratory state.
+              </p>
+              <div className="bg-[#E5E5E1] border border-[#C9C9C3] rounded px-3 py-2 font-mono text-[11px] flex items-center justify-between">
+                <span>Placed ICs: {circuit.placedICs.length}</span>
+                <span>Patch Cords: {circuit.wires.length}</span>
+              </div>
+              <p className="text-[11px] text-[#555C62]">
+                Tip: Even after confirming a reset, you can press <strong>Ctrl+Z (Undo)</strong> if
+                you need to restore your previous wiring.
+              </p>
+            </div>
+
+            <div className="bg-[#E5E5E1] border-t border-[#C9C9C3] px-4 py-2.5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowResetConfirmModal(false)}
+                className="px-3 py-1.5 text-xs font-medium bg-[#F1F0EB] border border-[#B8B8B1] rounded text-[#20252B] hover:bg-[#DAD9D3] cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                data-testid="confirm-reset-btn"
+                onClick={() => {
+                  resetCircuit();
+                  setShowResetConfirmModal(false);
+                }}
+                className="px-3.5 py-1.5 text-xs font-semibold bg-[#B83A32] text-white rounded hover:bg-[#9E2F28] cursor-pointer"
+              >
+                Confirm Reset
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 };

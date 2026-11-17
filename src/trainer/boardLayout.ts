@@ -89,6 +89,15 @@ export function getZifLayout(socketId: ZIFSocketId): ZifSocketLayout {
   };
 }
 
+export const DUSTBIN_LAYOUT = {
+  x: 1252,
+  y: 46,
+  width: 116,
+  height: 174,
+  centerX: 1310,
+  centerY: 138,
+};
+
 function buildTerminalRegistry(): Record<TerminalId, TerminalGeometry> {
   const map: Record<TerminalId, TerminalGeometry> = {};
   const add = (t: TerminalGeometry) => {
@@ -96,48 +105,42 @@ function buildTerminalRegistry(): Record<TerminalId, TerminalGeometry> {
   };
 
   // Clock & Pulse terminals
-  add({ id: 'CLK:OUT', x: 484, y: 108, label: 'CLK OUT', group: 'clock', radius: 8 });
-  add({ id: 'CLK:OUT_N', x: 528, y: 108, label: '~CLK OUT', group: 'clock', radius: 8 });
-  add({ id: 'PULSE:OUT', x: 506, y: 186, label: 'PULSE OUT', group: 'pulse', radius: 8 });
+  add({ id: 'CLK:OUT', x: 468, y: 108, label: 'CLK OUT', group: 'clock', radius: 8 });
+  add({ id: 'CLK:OUT_N', x: 506, y: 108, label: '~CLK OUT', group: 'clock', radius: 8 });
+  add({ id: 'PULSE:OUT', x: 487, y: 186, label: 'PULSE OUT', group: 'pulse', radius: 8 });
 
-  // Onboard 7-Segment Displays (DISP1, DISP2)
-  const dispConfigs: Array<{ id: 'DISP1' | 'DISP2'; baseX: number }> = [
-    { id: 'DISP1', baseX: 590 },
-    { id: 'DISP2', baseX: 766 },
-  ];
+  // Single Onboard 7-Segment Display (DISP1)
   const segRow1 = ['a', 'b', 'c', 'd', 'e'] as const;
   const segRow2 = ['f', 'g', 'dp', 'CA'] as const;
-  for (const dc of dispConfigs) {
-    segRow1.forEach((seg, idx) => {
-      add({
-        id: `${dc.id}:${seg}`,
-        x: dc.baseX + 20 + idx * 30,
-        y: 168,
-        label: `${dc.id} ${seg}`,
-        group: 'display',
-        radius: 6.5,
-      });
+  segRow1.forEach((seg, idx) => {
+    add({
+      id: `DISP1:${seg}`,
+      x: 572 + idx * 38,
+      y: 168,
+      label: `DISP1 ${seg}`,
+      group: 'display',
+      radius: 7.0,
     });
-    segRow2.forEach((seg, idx) => {
-      add({
-        id: `${dc.id}:${seg}`,
-        x: dc.baseX + 35 + idx * 30,
-        y: 200,
-        label: `${dc.id} ${seg}`,
-        group: 'display',
-        radius: 6.5,
-      });
+  });
+  segRow2.forEach((seg, idx) => {
+    add({
+      id: `DISP1:${seg}`,
+      x: 591 + idx * 38,
+      y: 200,
+      label: `DISP1 ${seg}`,
+      group: 'display',
+      radius: 7.0,
     });
-  }
+  });
 
-  // 16 Output LEDs (2 rows of 8)
+  // 16 Output LEDs (2 rows of 8, expanded & optimized spacing across x = 768..1240)
   for (let i = 0; i < 16; i++) {
     const row = Math.floor(i / 8);
     const col = i % 8;
     add({
       id: `LED:${i}`,
-      x: 966 + col * 51,
-      y: row === 0 ? 112 : 196,
+      x: 804 + col * 57,
+      y: row === 0 ? 112 : 192,
       label: `OUT ${i}`,
       group: 'led',
       radius: 7.5,
