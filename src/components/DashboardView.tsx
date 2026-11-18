@@ -176,7 +176,7 @@ export const DashboardView: React.FC = () => {
             <div className="flex items-center justify-between">
               <h2 className="text-base font-semibold text-[#20252B]">Recent Saved Projects</h2>
               <span className="text-xs font-mono text-[#747C82]">
-                Firebase Cloud + IndexedDB · {recentProjects.length} saved
+                Local Browser Storage · {recentProjects.length} saved
               </span>
             </div>
 
@@ -184,8 +184,9 @@ export const DashboardView: React.FC = () => {
               <div className="bg-[#F1F0EB] border border-[#D4D3CD] rounded p-6 text-center space-y-2">
                 <p className="text-sm font-medium text-[#303840]">No saved circuits yet</p>
                 <p className="text-xs text-[#747C82]">
-                  Open the Virtual Laboratory or create a new circuit project above. Changes auto-save
-                  to local IndexedDB and sync to Firebase Cloud Firestore when signed in.
+                  Open the Virtual Laboratory or create a new circuit project above. Changes
+                  auto-save to local browser storage, and clicking Save Project downloads a{' '}
+                  <code>.logicbench.json</code> file directly to your computer.
                 </p>
               </div>
             ) : (

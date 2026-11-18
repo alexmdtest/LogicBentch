@@ -137,6 +137,75 @@ function setLocalFallbackProjects(list: ProjectDocument[]): void {
   }
 }
 
+export function getProjectFileName(project: ProjectDocument): string {
+  const slug = project.name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return `${slug || 'logicbench-circuit'}.logicbench.json`;
+}
+
+export async function saveProjectFileToDisk(
+  project: ProjectDocument
+): Promise<'saved' | 'cancelled'> {
+  const json = serializeProject(project);
+  const fileName = getProjectFileName(project);
+
+  if (typeof window === 'undefined') return 'cancelled';
+
+  const pickerWin = window as Window & {
+    showSaveFilePicker?: (options?: {
+      suggestedName?: string;
+      types?: Array<{
+        description?: string;
+        accept: Record<string, string[]>;
+      }>;
+    }) => Promise<{
+      createWritable: () => Promise<{
+        write: (data: string) => Promise<void>;
+        close: () => Promise<void>;
+      }>;
+    }>;
+  };
+
+  if (typeof pickerWin.showSaveFilePicker === 'function') {
+    try {
+      const handle = await pickerWin.showSaveFilePicker({
+        suggestedName: fileName,
+        types: [
+          {
+            description: 'LogicBench Circuit Project (.logicbench.json)',
+            accept: { 'application/json': ['.logicbench.json', '.json'] },
+          },
+        ],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(json);
+      await writable.close();
+      return 'saved';
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        return 'cancelled';
+      }
+      // Fall through to browser download if blocked (e.g. iframe SecurityError)
+    }
+  }
+
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  a.rel = 'noopener';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+  return 'saved';
+}
+
 export async function saveProjectToStorage(project: ProjectDocument): Promise<void> {
   const stamped: ProjectDocument = {
     ...project,
@@ -157,17 +226,6 @@ export async function saveProjectToStorage(project: ProjectDocument): Promise<vo
     existing.unshift(stamped);
     setLocalFallbackProjects(existing.slice(0, 25));
   }
-
-  if (typeof window !== 'undefined') {
-    try {
-      const { auth, saveProjectToFirestore } = await import('../firebase');
-      if (auth.currentUser) {
-        await saveProjectToFirestore(stamped);
-      }
-    } catch {
-      // Cloud sync is best-effort alongside local IndexedDB
-    }
-  }
 }
 
 export async function listStoredProjects(): Promise<ProjectDocument[]> {
@@ -183,28 +241,6 @@ export async function listStoredProjects(): Promise<ProjectDocument[]> {
     db.close();
   } catch {
     localList = getLocalFallbackProjects();
-  }
-
-  if (typeof window !== 'undefined') {
-    try {
-      const { auth, listProjectsFromFirestore } = await import('../firebase');
-      if (auth.currentUser) {
-        const cloudList = await listProjectsFromFirestore();
-        const mergedMap = new Map<string, ProjectDocument>();
-        for (const p of localList) mergedMap.set(p.id, p);
-        for (const cp of cloudList) {
-          const existing = mergedMap.get(cp.id);
-          if (!existing || cp.updatedAt >= existing.updatedAt) {
-            mergedMap.set(cp.id, cp);
-          }
-        }
-        return Array.from(mergedMap.values()).sort((a, b) =>
-          b.updatedAt.localeCompare(a.updatedAt)
-        );
-      }
-    } catch {
-      // Fall back to local projects if offline or unauthenticated
-    }
   }
 
   return localList.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -226,14 +262,6 @@ export async function loadProjectById(id: string): Promise<ProjectDocument | nul
     if (fallback) return fallback;
   }
 
-  if (typeof window !== 'undefined') {
-    try {
-      const all = await listStoredProjects();
-      return all.find((p) => p.id === id) ?? null;
-    } catch {
-      return null;
-    }
-  }
   return null;
 }
 
@@ -250,16 +278,5 @@ export async function deleteProjectById(id: string): Promise<void> {
   } catch {
     const filtered = getLocalFallbackProjects().filter((p) => p.id !== id);
     setLocalFallbackProjects(filtered);
-  }
-
-  if (typeof window !== 'undefined') {
-    try {
-      const { auth, deleteProjectFromFirestore } = await import('../firebase');
-      if (auth.currentUser) {
-        await deleteProjectFromFirestore(id);
-      }
-    } catch {
-      // Ignore cloud deletion error when offline
-    }
   }
 }

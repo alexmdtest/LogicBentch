@@ -22,7 +22,7 @@ import {
   formatDirectionTag,
   getDisplayedZifPinInfo,
 } from '../simulation/netlist';
-import { serializeProject } from '../storage/projectStorage';
+import { saveProjectFileToDisk } from '../storage/projectStorage';
 import { useLabStore } from '../store/useLabStore';
 import { WIRE_COLOR_HEX } from '../trainer/boardLayout';
 import { ICDefinition, PlacedIC, WireColor, ZIFSocketId } from '../types/circuit';
@@ -400,15 +400,9 @@ export const TrainerWorkspace: React.FC = () => {
     tickPulseLevel,
   ]);
 
-  const handleExportJson = () => {
-    const json = serializeProject(project);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${project.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'logicbench-circuit'}.logicbench.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const handleExportJson = async () => {
+    await useLabStore.getState().saveCurrentProject();
+    await saveProjectFileToDisk(useLabStore.getState().project);
   };
 
   const quickCompat16 = canInsertIntoZif(quickICPart, 'ZIF1');
@@ -738,13 +732,17 @@ export const TrainerWorkspace: React.FC = () => {
         </div>
       )}
 
-      {/* Main Split: Trainer Canvas + Retractable Right Engineering Inspector */}
-      <div className="flex-1 overflow-hidden flex flex-col xl:flex-row">
-        {/* DT-1004 Hardware Board Stage (expands automatically when inspector is retracted) */}
-        <div className="flex-1 overflow-auto p-2 lg:p-3 flex items-start justify-center bg-[#DFDDD6] transition-all duration-200">
+      {/* Main Split: Trainer Canvas + Horizontally Minimizable Right Engineering Inspector */}
+      <div className="flex-1 min-h-0 overflow-hidden flex flex-col lg:flex-row">
+        {/* DT-1004 Hardware Board Stage (dynamically expands to fill freed horizontal space) */}
+        <div
+          data-testid="trainer-board-stage"
+          className="flex-1 min-w-0 min-h-0 overflow-auto p-2 lg:p-3 flex items-start justify-center bg-[#DFDDD6] transition-all duration-200 ease-out"
+        >
           <div
-            className={`w-full transition-all duration-200 ${
-              inspectorCollapsed ? 'max-w-[1640px]' : 'max-w-[1360px]'
+            data-testid="trainer-board-container"
+            className={`w-full transition-all duration-200 ease-out ${
+              inspectorCollapsed ? 'max-w-[1760px]' : 'max-w-[1440px]'
             }`}
           >
             <TrainerBoardSVG />
@@ -752,62 +750,78 @@ export const TrainerWorkspace: React.FC = () => {
         </div>
 
         {/* Right Engineering Inspector — Horizontally Minimizable & Retractable */}
-        {inspectorCollapsed ? (
-          <aside
-            aria-label="Minimized Engineering Inspector"
-            className="w-full xl:w-11 border-t xl:border-t-0 xl:border-l border-[#C9C9C3] bg-[#DAD9D3] flex xl:flex-col items-center justify-between xl:justify-start py-2 px-3 xl:px-1.5 gap-3 shrink-0 transition-all duration-200"
-          >
-            <button
-              type="button"
-              onClick={() => setInspectorCollapsed(false)}
-              title="Expand Inspector Panel"
-              aria-label="Expand Inspector Panel"
-              className="p-1.5 rounded bg-[#303840] text-[#F1F0EB] hover:bg-[#456A83] transition-colors cursor-pointer"
-            >
-              <PanelRightOpen className="w-4 h-4" />
-            </button>
+        <aside
+          data-testid="inspector-panel"
+          data-collapsed={inspectorCollapsed ? 'true' : 'false'}
+          aria-label={inspectorCollapsed ? 'Minimized Engineering Inspector' : 'Engineering Inspector'}
+          className={`shrink-0 border-t lg:border-t-0 lg:border-l border-[#C9C9C3] flex flex-col overflow-hidden transition-all duration-200 ease-out ${
+            inspectorCollapsed
+              ? 'w-full h-11 lg:w-11 lg:h-full bg-[#DAD9D3]'
+              : 'w-full h-72 lg:w-80 lg:h-full bg-[#E5E5E1]'
+          }`}
+        >
+          {inspectorCollapsed ? (
+            <div className="w-full h-full flex lg:flex-col items-center justify-between lg:justify-start py-1.5 lg:py-2.5 px-3 lg:px-1.5 gap-3">
+              <button
+                type="button"
+                data-testid="expand-inspector-btn"
+                onClick={() => setInspectorCollapsed(false)}
+                title="Expand Utility Panel"
+                aria-label="Expand Inspector Panel"
+                className="p-1.5 rounded bg-[#303840] text-[#F1F0EB] hover:bg-[#456A83] transition-colors cursor-pointer shrink-0"
+              >
+                <PanelRightOpen className="w-4 h-4" />
+              </button>
 
-            <div className="flex xl:flex-col items-center gap-2 text-[10px] font-mono text-[#303840]">
-              <button
-                type="button"
-                onClick={() => {
-                  setInspectorTab('diagnostics');
-                  setInspectorCollapsed(false);
-                }}
-                title={`Checks (${errorCount + warnCount})`}
-                className="px-1.5 py-1 rounded bg-[#F1F0EB] border border-[#B8B8B1] hover:border-[#456A83] font-semibold cursor-pointer"
-              >
-                C:{errorCount + warnCount}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setInspectorTab('ic');
-                  setInspectorCollapsed(false);
-                }}
-                title={`ICs (${circuit.placedICs.length})`}
-                className="px-1.5 py-1 rounded bg-[#F1F0EB] border border-[#B8B8B1] hover:border-[#456A83] font-semibold cursor-pointer"
-              >
-                IC:{circuit.placedICs.length}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setInspectorTab('wires');
-                  setInspectorCollapsed(false);
-                }}
-                title={`Wires (${circuit.wires.length})`}
-                className="px-1.5 py-1 rounded bg-[#F1F0EB] border border-[#B8B8B1] hover:border-[#456A83] font-semibold cursor-pointer"
-              >
-                W:{circuit.wires.length}
-              </button>
+              <div className="flex lg:flex-col items-center gap-1.5 text-[10px] font-mono text-[#303840]">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInspectorTab('diagnostics');
+                    setInspectorCollapsed(false);
+                  }}
+                  title={`Checks (${errorCount + warnCount})`}
+                  className="px-1.5 py-1 rounded bg-[#F1F0EB] border border-[#B8B8B1] hover:border-[#456A83] font-semibold cursor-pointer"
+                >
+                  C:{errorCount + warnCount}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInspectorTab('ic');
+                    setInspectorCollapsed(false);
+                  }}
+                  title={`ICs (${circuit.placedICs.length})`}
+                  className="px-1.5 py-1 rounded bg-[#F1F0EB] border border-[#B8B8B1] hover:border-[#456A83] font-semibold cursor-pointer"
+                >
+                  IC:{circuit.placedICs.length}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInspectorTab('wires');
+                    setInspectorCollapsed(false);
+                  }}
+                  title={`Wires (${circuit.wires.length})`}
+                  className="px-1.5 py-1 rounded bg-[#F1F0EB] border border-[#B8B8B1] hover:border-[#456A83] font-semibold cursor-pointer"
+                >
+                  W:{circuit.wires.length}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInspectorTab('clock');
+                    setInspectorCollapsed(false);
+                  }}
+                  title="Timing Parameters"
+                  className="px-1.5 py-1 rounded bg-[#F1F0EB] border border-[#B8B8B1] hover:border-[#456A83] font-semibold cursor-pointer"
+                >
+                  CLK
+                </button>
+              </div>
             </div>
-          </aside>
-        ) : (
-          <aside
-            aria-label="Engineering Inspector"
-            className="w-full xl:w-80 border-t xl:border-t-0 xl:border-l border-[#C9C9C3] bg-[#E5E5E1] flex flex-col shrink-0 h-72 xl:h-full transition-all duration-200"
-          >
+          ) : (
+            <div className="w-full lg:w-80 h-full flex flex-col">
             {/* Inspector Tabs + Horizontal Collapse Button */}
             <div className="flex items-center border-b border-[#C9C9C3] bg-[#DAD9D3] text-xs font-medium shrink-0">
               <div className="grid grid-cols-4 flex-1">
@@ -859,6 +873,7 @@ export const TrainerWorkspace: React.FC = () => {
 
               <button
                 type="button"
+                data-testid="collapse-inspector-btn"
                 onClick={() => setInspectorCollapsed(true)}
                 title="Minimize Inspector Horizontally"
                 aria-label="Minimize Inspector Horizontally"
@@ -1240,8 +1255,9 @@ export const TrainerWorkspace: React.FC = () => {
                 </div>
               )}
             </div>
-          </aside>
-        )}
+          </div>
+          )}
+        </aside>
       </div>
 
       {/* Reset Caution Confirmation Modal Popup */}

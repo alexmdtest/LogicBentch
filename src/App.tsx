@@ -5,6 +5,7 @@ import { ExperimentsView } from './components/ExperimentsView';
 import { ICLibraryView } from './components/ICLibraryView';
 import { TopNav } from './components/TopNav';
 import { TrainerWorkspace } from './components/TrainerWorkspace';
+import { getProjectFileName, saveProjectFileToDisk } from './storage/projectStorage';
 import { useLabStore } from './store/useLabStore';
 
 export default function App() {
@@ -12,20 +13,30 @@ export default function App() {
   const saveCurrentProject = useLabStore((s) => s.saveCurrentProject);
   const refreshRecentProjects = useLabStore((s) => s.refreshRecentProjects);
   const [saveToast, setSaveToast] = useState<string | null>(null);
+  const toastTimerRef = React.useRef<number | null>(null);
 
   useEffect(() => {
     void refreshRecentProjects();
+    return () => {
+      if (toastTimerRef.current !== null) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+    };
   }, [refreshRecentProjects]);
 
   const handleSave = async () => {
     await saveCurrentProject();
-    const { auth } = await import('./firebase');
+    const currentProject = useLabStore.getState().project;
+    const diskStatus = await saveProjectFileToDisk(currentProject);
     setSaveToast(
-      auth.currentUser
-        ? 'Project synced to Firebase Firestore & local IndexedDB'
-        : 'Project saved to local IndexedDB (Sign in to sync to Firebase)'
+      diskStatus === 'saved'
+        ? `Saved ${getProjectFileName(currentProject)} to your computer`
+        : 'Saved to browser storage (file save cancelled)'
     );
-    setTimeout(() => setSaveToast(null), 2400);
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = window.setTimeout(() => setSaveToast(null), 3200);
   };
 
   return (
